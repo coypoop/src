@@ -3833,6 +3833,7 @@ uaudio_attach(device_t parent, device_t self, void *aux)
 	desc.rptr = (unsigned char *)cdesc;
 	desc.wptr = desc.rptr + UGETW(cdesc->wTotalLength);
 
+	sc->sc_dev = self;
 	sc->sc_udev = uiaa->uiaa_device;
 	sc->unit_list = NULL;
 	sc->names = NULL;
