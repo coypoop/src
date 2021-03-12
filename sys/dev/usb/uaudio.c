@@ -464,9 +464,9 @@ static void uaudio_rdata_intr(struct usbd_xfer *, void *, usbd_status);
 static void uaudio_psync_intr(struct usbd_xfer *, void *, usbd_status);
 
 #ifdef UAUDIO_DEBUG
-char *uaudio_isoname(int isotype);
-char *uaudio_modename(int mode);
-char *uaudio_usagename(int usage);
+const char *uaudio_isoname(int isotype);
+const char *uaudio_modename(int mode);
+const char *uaudio_usagename(int usage);
 void uaudio_rates_print(int rates);
 void uaudio_ranges_print(struct uaudio_ranges *r);
 void uaudio_print_unit(struct uaudio_softc *sc, struct uaudio_unit *u);
@@ -1641,7 +1641,7 @@ uaudio_setname_middle(struct uaudio_softc *sc, struct uaudio_unit *u)
 /*
  * Return the synchronization type name, for debug purposes only.
  */
-char *
+const char *
 uaudio_isoname(int isotype)
 {
 	switch (isotype) {
@@ -1659,7 +1659,7 @@ uaudio_isoname(int isotype)
 /*
  * Return the name of the given mode, debug only
  */
-char *
+const char *
 uaudio_modename(int mode)
 {
 	switch (mode) {
@@ -1679,7 +1679,7 @@ uaudio_modename(int mode)
 /*
  * Return UAC v2.0 endpoint usage, debug only
  */
-char *
+const char *
 uaudio_usagename(int usage)
 {
 	switch (usage) {
@@ -1828,6 +1828,8 @@ uaudio_conf_print(struct uaudio_softc *sc)
 	struct mixer_ctrl ctl;
 	int i, rates;
 
+	mutex_enter(&sc->sc_lock);
+
 	mi.index = 0;
 	while (1) {
 		if (uaudio_query_devinfo(sc, &mi) != 0)
@@ -1894,6 +1896,8 @@ uaudio_conf_print(struct uaudio_softc *sc)
 		case UAUDIO_V2:
 			rates = uaudio_getrates(sc, p);
 			break;
+		default:
+			panic("bad usb audio version %d", sc->version);
 		}
 		printf("pchan = %d, s%dle%d, rchan = %d, s%dle%d, rates:",
 		    p->palt ? p->palt->nch : 0,
@@ -1904,6 +1908,8 @@ uaudio_conf_print(struct uaudio_softc *sc)
 		    p->ralt ? p->ralt->bps : 0);
 		uaudio_rates_print(rates);
 	}
+
+	mutex_exit(&sc->sc_lock);
 }
 #endif
 
@@ -3206,7 +3212,7 @@ uaudio_pdata_copy(struct uaudio_softc *sc)
 			count = sc->copy_todo;
 #ifdef UAUDIO_DEBUG
 		if (uaudio_debug >= 2) {
-			printf("%s: %llu.%06lu: %zd..%zd -> %u:%u..%zu\n",
+			printf("%s: %lu.%06u: %zd..%zd -> %u:%u..%zu\n",
 			    __func__, tv.tv_sec, tv.tv_usec,
 			    s->ring_pos - s->ring_start,
 			    s->ring_pos - s->ring_start + count,
@@ -3311,7 +3317,7 @@ uaudio_pdata_xfer(struct uaudio_softc *sc)
 #ifdef UAUDIO_DEBUG
 	if (uaudio_debug >= 3) {
 		getmicrotime(&tv);
-		printf("%s: %llu.%06lu: "
+		printf("%s: %lu.%06u: "
 		    "%d bytes, %u frames, remain = 0x%x, offs = %d\n",
 		    __func__, tv.tv_sec, tv.tv_usec,
 		    xfer->size, xfer->nframes,
@@ -3375,7 +3381,7 @@ uaudio_pdata_intr(struct usbd_xfer *usb_xfer, void *arg, usbd_status status)
 #ifdef UAUDIO_DEBUG
 	if (uaudio_debug >= 2) {
 		getmicrotime(&tv);
-		printf("%s: %llu.%06lu: %u: %u bytes\n",
+		printf("%s: %lu.%06u: %u: %u bytes\n",
 		    __func__, tv.tv_sec, tv.tv_usec,
 		    s->data_nextxfer, xfer->size);
 	}
@@ -3456,7 +3462,7 @@ uaudio_psync_xfer(struct uaudio_softc *sc)
 #ifdef UAUDIO_DEBUG
 	if (uaudio_debug >= 3) {
 		getmicrotime(&tv);
-		printf("%s: %llu.%06lu: %dB, %d fr\n", __func__,
+		printf("%s: %lu.%06u: %dB, %d fr\n", __func__,
 		    tv.tv_sec, tv.tv_usec, sc->sync_pktsz, xfer->nframes);
 	}
 #endif
@@ -3503,7 +3509,7 @@ uaudio_psync_intr(struct usbd_xfer *usb_xfer, void *arg, usbd_status status)
 #ifdef UAUDIO_DEBUG
 			if (uaudio_debug >= 2) {
 				getmicrotime(&tv);
-				printf("%s: %llu.%06lu: spf: %08x\n",
+				printf("%s: %lu.%06u: spf: %08x\n",
 				    __func__, tv.tv_sec, tv.tv_usec, val);
 			}
 #endif
@@ -3578,7 +3584,7 @@ uaudio_rdata_xfer(struct uaudio_softc *sc)
 #ifdef UAUDIO_DEBUG
 	if (uaudio_debug >= 3) {
 		getmicrotime(&tv);
-		printf("%s: %llu.%06lu: "
+		printf("%s: %lu.%06u: "
 		    "%u fr, %d bytes (max %d), offs = %d\n",
 		    __func__, tv.tv_sec, tv.tv_usec,
 		    xfer->nframes, xfer->size,
@@ -3695,7 +3701,7 @@ uaudio_rdata_intr(struct usbd_xfer *usb_xfer, void *arg, usbd_status status)
 #ifdef UAUDIO_DEBUG
 	if (uaudio_debug >= 2) {
 		getmicrotime(&tv);
-		printf("%s: %llu.%06lu: %u: "
+		printf("%s: %lu.%06u: %u: "
 		    "%u bytes of %u, offs -> %d\n",
 		    __func__, tv.tv_sec, tv.tv_usec,
 		    s->data_nextxfer, data_size, xfer->size, s->ring_offs);
