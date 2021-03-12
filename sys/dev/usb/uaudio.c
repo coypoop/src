@@ -3819,7 +3819,7 @@ uaudio_match(device_t parent, cfdata_t match, void *aux)
 static void
 uaudio_attach(device_t parent, device_t self, void *aux)
 {
-	struct uaudio_softc *sc = (struct uaudio_softc *)self;
+	struct uaudio_softc *sc = device_private(self);
 	struct usbif_attach_arg *uiaa = aux;
 	usb_config_descriptor_t *cdesc;
 	struct uaudio_blob desc;
