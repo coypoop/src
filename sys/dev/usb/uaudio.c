@@ -711,7 +711,7 @@ uaudio_mkname(struct uaudio_softc *sc, const char *templ, char *res)
 	n = sc->names;
 	while (1) {
 		if (n == NULL) {
-			n = kmem_alloc(sizeof(struct uaudio_name), KM_SLEEP);
+			n = kmem_alloc(sizeof(*n), KM_SLEEP);
 			n->templ = templ;
 			n->unit = 0;
 			n->next = sc->names;
@@ -791,7 +791,7 @@ uaudio_ranges_add(struct uaudio_ranges *r, int min, int max, int res)
 	/* XXX: use 'res' here */
 	r->nval += max - min + 1;
 
-	e = kmem_alloc(sizeof(struct uaudio_ranges_el), KM_SLEEP);
+	e = kmem_alloc(sizeof(*e), KM_SLEEP);
 	e->min = min;
 	e->max = max;
 	e->res = res;
@@ -809,7 +809,7 @@ uaudio_ranges_clear(struct uaudio_ranges *r)
 
 	while ((e = r->el) != NULL) {
 		r->el = e->next;
-		kmem_free(e, sizeof(struct uaudio_ranges_el));
+		kmem_free(e, sizeof(*e));
 	}
 	r->nval = 0;
 }
@@ -1120,7 +1120,7 @@ uaudio_feature_addent(struct uaudio_softc *sc,
 		return;
 	}
 
-	m = kmem_alloc(sizeof(struct uaudio_mixent), KM_SLEEP);
+	m = kmem_alloc(sizeof(*m), KM_SLEEP);
 	m->chan = chan;
 	m->fname = features[uac_type].name;
 	m->type = features[uac_type].mix_type;
@@ -1134,13 +1134,13 @@ uaudio_feature_addent(struct uaudio_softc *sc,
 			&m->ranges)) {
 			printf("%s: failed to get ranges for %s control\n",
 			    DEVNAME(sc), m->fname);
-			kmem_free(m, sizeof(struct uaudio_mixent));
+			kmem_free(m, sizeof(*m));
 			return;
 		}
 		if (m->ranges.el == NULL) {
 			printf("%s: skipped %s control with empty range\n",
 			    DEVNAME(sc), m->fname);
-			kmem_free(m, sizeof(struct uaudio_mixent));
+			kmem_free(m, sizeof(*m));
 			return;
 		}
 #ifdef UAUDIO_DEBUG
@@ -1160,7 +1160,7 @@ uaudio_feature_addent(struct uaudio_softc *sc,
 		if (cmp == 0) {
 			DPRINTF("%02u: %s.%s: duplicate feature for chan %d\n",
 			    u->id, u->name, m->fname, m->chan);
-			kmem_free(m, sizeof(struct uaudio_mixent));
+			kmem_free(m, sizeof(*m));
 			return;
 		}
 		if (cmp > 0)
@@ -1284,7 +1284,7 @@ uaudio_process_unit(struct uaudio_softc *sc,
 	 */
 	u = uaudio_unit_byid(sc, id);
 	if (u == NULL) {
-		u = kmem_alloc(sizeof(struct uaudio_unit), KM_SLEEP);
+		u = kmem_alloc(sizeof(*u), KM_SLEEP);
 		u->id = id;
 		u->type = subtype;
 		u->term = 0;
@@ -2553,7 +2553,7 @@ uaudio_process_as(struct uaudio_softc *sc,
 	unsigned int type, subtype;
 	int ispcm = 0;
 
-	a = kmem_alloc(sizeof(struct uaudio_alt), KM_SLEEP);
+	a = kmem_alloc(sizeof(*a), KM_SLEEP);
 	a->mode = 0;
 	a->nch = 0;
 	a->v1_rates = 0;
@@ -2589,7 +2589,7 @@ uaudio_process_as(struct uaudio_softc *sc,
 		}
 		if (!ispcm) {
 			DPRINTF("%s: non-pcm iface\n", __func__);
-			kmem_free(a, sizeof(struct uaudio_alt));
+			kmem_free(a, sizeof(*a));
 			return 1;
 		}
 	}
@@ -2613,7 +2613,7 @@ uaudio_process_as(struct uaudio_softc *sc,
 
 	if (a->mode == 0) {
 		printf("%s: no data endpoints found\n", DEVNAME(sc));
-		kmem_free(a, sizeof(struct uaudio_alt));
+		kmem_free(a, sizeof(*a));
 		return 1;
 	}
 
@@ -2641,7 +2641,7 @@ uaudio_process_as(struct uaudio_softc *sc,
 	*pa = a;
 	return 1;
 failed:
-	kmem_free(a, sizeof(struct uaudio_alt));
+	kmem_free(a, sizeof(*a));
 	return 0;
 }
 
@@ -2681,8 +2681,7 @@ uaudio_fixup_params(struct uaudio_softc *sc)
 			default:
 				panic("Unknown sc->version %d", sc->version);
 			}
-			p = kmem_alloc(sizeof(struct uaudio_params),
-			    KM_SLEEP);
+			p = kmem_alloc(sizeof(*p), KM_SLEEP);
 			p->palt = ap;
 			p->ralt = ar;
 			p->v1_rates = rates;
@@ -2698,8 +2697,7 @@ uaudio_fixup_params(struct uaudio_softc *sc)
 	 */
 	if (sc->params_list == NULL) {
 		for (a = sc->alts; a != NULL; a = a->next) {
-			p = kmem_alloc(sizeof(struct uaudio_params),
-			    KM_SLEEP);
+			p = kmem_alloc(sizeof(*p), KM_SLEEP);
 			if (a->mode == AUMODE_PLAY) {
 				p->palt = a;
 				p->ralt = NULL;
@@ -3879,12 +3877,12 @@ uaudio_detach(device_t self, int flags)
 
 	while ((alt = sc->alts) != NULL) {
 		sc->alts = alt->next;
-		kmem_free(alt, sizeof(struct uaudio_alt));
+		kmem_free(alt, sizeof(*alt));
 	}
 
 	while ((params = sc->params_list) != NULL) {
 		sc->params_list = params->next;
-		kmem_free(params, sizeof(struct uaudio_params));
+		kmem_free(params, sizeof(*params));
 	}
 
 	while ((unit = sc->unit_list) != NULL) {
@@ -3892,15 +3890,15 @@ uaudio_detach(device_t self, int flags)
 		while ((mixent = unit->mixent_list) != NULL) {
 			unit->mixent_list = mixent->next;
 			uaudio_ranges_clear(&mixent->ranges);
-			kmem_free(mixent, sizeof(struct uaudio_mixent));
+			kmem_free(mixent, sizeof(*mixent));
 		}
 		uaudio_ranges_clear(&unit->rates);
-		kmem_free(unit, sizeof(struct uaudio_unit));
+		kmem_free(unit, sizeof(*unit));
 	}
 
 	while ((name = sc->names)) {
 		sc->names = name->next;
-		kmem_free(name, sizeof(struct uaudio_name));
+		kmem_free(name, sizeof(*name));
 	}
         mutex_destroy(&sc->sc_lock);
 
