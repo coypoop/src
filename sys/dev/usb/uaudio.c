@@ -3804,7 +3804,7 @@ uaudio_match(device_t parent, cfdata_t match, void *aux)
 	/* Trigger on the control interface. */
 	if (uiaa->uiaa_class != UICLASS_AUDIO ||
 	    uiaa->uiaa_subclass != UISUBCLASS_AUDIOCONTROL ||
-	    /*(usbd_get_quirks(uiaa->uiaa_device)->uq_flags & UQ_BAD_AUDIO)*/ 1)
+	    /*(usbd_get_quirks(uiaa->uiaa_device)->uq_flags & UQ_BAD_AUDIO)*/ 0)
 		return UMATCH_NONE;
 
 	return UMATCH_IFACECLASS_IFACESUBCLASS;
