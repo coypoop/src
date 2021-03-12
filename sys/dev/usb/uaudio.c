@@ -3819,7 +3819,7 @@ uaudio_attach(device_t parent, device_t self, void *aux)
 	struct uaudio_blob desc;
 
 	mutex_init(&sc->sc_lock, MUTEX_DEFAULT, IPL_NONE);
-	mutex_init(&sc->sc_intr_lock, MUTEX_DEFAULT, IPL_USB);
+	mutex_init(&sc->sc_intr_lock, MUTEX_DEFAULT, IPL_SOFTUSB);
 
 	/*
 	 * this device has audio AC or AS or MS interface, get the
