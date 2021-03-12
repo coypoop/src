@@ -2750,11 +2750,11 @@ uaudio_setup_formats(struct uaudio_softc *sc)
 		auf = &sc->formats[i];
 
 		/* XXX */
-		//auf->driver_data = ...;
 		auf->mode = alt->mode;
-		//auf->encoding = ...;
+		// Only PCM is supported
+		auf->encoding = AUDIO_ENCODING_SLINEAR_LE;
 		auf->validbits = alt->bits;
-		//auf->precision = ...;
+		auf->precision = alt->bits;
 		auf->channels = alt->nch;
 		//auf->channel_mask = ...;
 		//auf->frequency_type = ...;
