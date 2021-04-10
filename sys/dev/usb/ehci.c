@@ -134,6 +134,8 @@ fail:
 
 struct ehci_pipe {
 	struct usbd_pipe pipe;
+	TAILQ_ENTRY(ehci_pipe) intrnext;
+	int intrcount;		/* XXX shouldn't be necessary */
 	int nexttoggle;
 
 	ehci_soft_qh_t *sqh;
@@ -160,13 +162,13 @@ Static usbd_status	ehci_open(struct usbd_pipe *);
 Static void		ehci_poll(struct usbd_bus *);
 Static void		ehci_softintr(void *);
 Static int		ehci_intr1(ehci_softc_t *);
-Static void		ehci_check_qh_intr(ehci_softc_t *, struct ehci_xfer *,
+Static bool		ehci_check_qh_intr(ehci_softc_t *, struct ehci_xfer *,
 			    ex_completeq_t *);
-Static void		ehci_check_itd_intr(ehci_softc_t *, struct ehci_xfer *,
+Static bool		ehci_check_itd_intr(ehci_softc_t *, struct ehci_xfer *,
 			    ex_completeq_t *);
-Static void		ehci_check_sitd_intr(ehci_softc_t *, struct ehci_xfer *,
+Static bool		ehci_check_sitd_intr(ehci_softc_t *, struct ehci_xfer *,
 			    ex_completeq_t *);
-Static void		ehci_idone(struct ehci_xfer *, ex_completeq_t *);
+Static bool		ehci_idone(struct ehci_xfer *, ex_completeq_t *);
 Static void		ehci_intrlist_timeout(void *);
 Static void		ehci_doorbell(void *);
 Static void		ehci_pcd(void *);
@@ -302,15 +304,26 @@ Static void		ehci_dump_exfer(struct ehci_xfer *);
 static inline void
 ehci_add_intr_list(ehci_softc_t *sc, struct ehci_xfer *ex)
 {
+	struct usbd_pipe *p = ex->ex_xfer.ux_pipe;
+	struct ehci_pipe *ep = EHCI_PIPE2EPIPE(p);
 
-	TAILQ_INSERT_TAIL(&sc->sc_intrhead, ex, ex_next);
+	KASSERT(sc->sc_bus.ub_usepolling || mutex_owned(&sc->sc_lock));
+
+	if (ep->intrcount++ == 0)
+		TAILQ_INSERT_TAIL(&sc->sc_intrhead, ep, intrnext);
 }
 
 static inline void
 ehci_del_intr_list(ehci_softc_t *sc, struct ehci_xfer *ex)
 {
+	struct usbd_pipe *p = ex->ex_xfer.ux_pipe;
+	struct ehci_pipe *ep = EHCI_PIPE2EPIPE(p);
 
-	TAILQ_REMOVE(&sc->sc_intrhead, ex, ex_next);
+	KASSERT(sc->sc_bus.ub_usepolling || mutex_owned(&sc->sc_lock));
+	KASSERT(ep->intrcount);
+
+	if (--ep->intrcount == 0)
+		TAILQ_REMOVE(&sc->sc_intrhead, ep, intrnext);
 }
 
 Static const struct usbd_bus_methods ehci_bus_methods = {
@@ -812,7 +825,10 @@ ehci_softintr(void *v)
 {
 	struct usbd_bus *bus = v;
 	ehci_softc_t *sc = EHCI_BUS2SC(bus);
+	struct ehci_pipe *ep, *nextep;
 	struct ehci_xfer *ex, *nextex;
+	struct usbd_xfer *xfer;
+	bool ok;
 
 	KASSERT(sc->sc_bus.ub_usepolling || mutex_owned(&sc->sc_lock));
 
@@ -829,33 +845,41 @@ ehci_softintr(void *v)
 	 */
 
 	/*
-	 * ehci_idone will remove transfer from sc->sc_intrhead if it's
-	 * complete and add to our cq list
-	 *
+	 * ehci_idone will add the xfer to our cq list if it's
+	 * complete, and remove the pipe from sc->sc_intrhead if it's
+	 * empty.
 	 */
-	TAILQ_FOREACH_SAFE(ex, &sc->sc_intrhead, ex_next, nextex) {
-		switch (ex->ex_type) {
-		case EX_CTRL:
-		case EX_BULK:
-		case EX_INTR:
-			ehci_check_qh_intr(sc, ex, &cq);
-			break;
-		case EX_ISOC:
-			ehci_check_itd_intr(sc, ex, &cq);
-			break;
-		case EX_FS_ISOC:
-			ehci_check_sitd_intr(sc, ex, &cq);
-			break;
-		default:
-			KASSERT(false);
+	TAILQ_FOREACH_SAFE(ep, &sc->sc_intrhead, intrnext, nextep) {
+		SIMPLEQ_FOREACH(xfer, &ep->pipe.up_queue, ux_next) {
+			if (xfer->ux_status == USBD_NOT_STARTED)
+				break;
+			ex = EHCI_XFER2EXFER(xfer);
+			ok = false;
+			switch (ex->ex_type) {
+			case EX_CTRL:
+			case EX_BULK:
+			case EX_INTR:
+				ok = ehci_check_qh_intr(sc, ex, &cq);
+				break;
+			case EX_ISOC:
+				ok = ehci_check_itd_intr(sc, ex, &cq);
+				break;
+			case EX_FS_ISOC:
+				ok = ehci_check_sitd_intr(sc, ex, &cq);
+				break;
+			default:
+				KASSERTMSG(false,
+				    "xfer %p: invalid ehci xfer type %d\n",
+				    xfer, ex->ex_type);
+			}
+			if (!ok)
+				break;
 		}
-
 	}
 
 	/*
-	 * We abuse ex_next for the interrupt and complete lists and
-	 * interrupt transfers will get re-added here so use
-	 * the _SAFE version of TAILQ_FOREACH.
+	 * Can't touch ex after usb_transfer_complete, so use
+	 * TAILQ_FOREACH_SAFE.
 	 */
 	TAILQ_FOREACH_SAFE(ex, &cq, ex_next, nextex) {
 		usb_transfer_complete(&ex->ex_xfer);
@@ -868,7 +892,7 @@ ehci_softintr(void *v)
 		    hz, ehci_intrlist_timeout, sc);
 }
 
-Static void
+Static bool
 ehci_check_qh_intr(ehci_softc_t *sc, struct ehci_xfer *ex, ex_completeq_t *cq)
 {
 	ehci_soft_qtd_t *sqtd, *fsqtd, *lsqtd;
@@ -943,14 +967,14 @@ ehci_check_qh_intr(ehci_softc_t *sc, struct ehci_xfer *ex, ex_completeq_t *cq)
 		ehci_dump_sqtds(ex->ex_sqtdstart);
 		DPRINTFN(5, "--- still active end ---", 0, 0, 0, 0);
 #endif
-		return;
+		return false;
 	}
  done:
 	DPRINTFN(10, "ex=%#jx done", (uintptr_t)ex, 0, 0, 0);
-	ehci_idone(ex, cq);
+	return ehci_idone(ex, cq);
 }
 
-Static void
+Static bool
 ehci_check_itd_intr(ehci_softc_t *sc, struct ehci_xfer *ex, ex_completeq_t *cq)
 {
 	ehci_soft_itd_t *itd;
@@ -959,10 +983,6 @@ ehci_check_itd_intr(ehci_softc_t *sc, struct ehci_xfer *ex, ex_completeq_t *cq)
 	EHCIHIST_FUNC(); EHCIHIST_CALLED();
 
 	KASSERT(mutex_owned(&sc->sc_lock));
-
-	if (&ex->ex_xfer != SIMPLEQ_FIRST(&ex->ex_xfer.ux_pipe->up_queue))
-		return;
-
 	KASSERTMSG(ex->ex_itdstart != NULL && ex->ex_itdend != NULL,
 	    "xfer %p fitd %p litd %p", ex, ex->ex_itdstart, ex->ex_itdend);
 
@@ -990,13 +1010,13 @@ ehci_check_itd_intr(ehci_softc_t *sc, struct ehci_xfer *ex, ex_completeq_t *cq)
 
 	DPRINTFN(10, "ex %#jx itd %#jx still active",
 	    (uintptr_t)ex, (uintptr_t)ex->ex_itdstart, 0, 0);
-	return;
+	return false;
 done:
 	DPRINTF("ex %#jx done", (uintptr_t)ex, 0, 0, 0);
-	ehci_idone(ex, cq);
+	return ehci_idone(ex, cq);
 }
 
-void
+Static bool
 ehci_check_sitd_intr(ehci_softc_t *sc, struct ehci_xfer *ex, ex_completeq_t *cq)
 {
 	ehci_soft_sitd_t *sitd;
@@ -1004,10 +1024,6 @@ ehci_check_sitd_intr(ehci_softc_t *sc, struct ehci_xfer *ex, ex_completeq_t *cq)
 	EHCIHIST_FUNC(); EHCIHIST_CALLED();
 
 	KASSERT(mutex_owned(&sc->sc_lock));
-
-	if (&ex->ex_xfer != SIMPLEQ_FIRST(&ex->ex_xfer.ux_pipe->up_queue))
-		return;
-
 	KASSERTMSG(ex->ex_sitdstart != NULL && ex->ex_sitdend != NULL,
 	    "xfer %p fsitd %p lsitd %p", ex, ex->ex_sitdstart, ex->ex_sitdend);
 
@@ -1027,13 +1043,13 @@ ehci_check_sitd_intr(ehci_softc_t *sc, struct ehci_xfer *ex, ex_completeq_t *cq)
 	    sizeof(sitd->sitd.sitd_trans), BUS_DMASYNC_PREREAD);
 
 	if (active)
-		return;
+		return false;
 
 	DPRINTFN(10, "ex=%#jx done", (uintptr_t)ex, 0, 0, 0);
-	ehci_idone(ex, cq);
+	return ehci_idone(ex, cq);
 }
 
-Static void
+Static bool
 ehci_idone(struct ehci_xfer *ex, ex_completeq_t *cq)
 {
 	EHCIHIST_FUNC(); EHCIHIST_CALLED();
@@ -1053,7 +1069,7 @@ ehci_idone(struct ehci_xfer *ex, ex_completeq_t *cq)
 	 * completed or aborted, drop it on the floor.
 	 */
 	if (!usbd_xfer_trycomplete(xfer))
-		return;
+		return false;
 
 #ifdef DIAGNOSTIC
 #ifdef EHCI_DEBUG
@@ -1282,6 +1298,7 @@ ehci_idone(struct ehci_xfer *ex, ex_completeq_t *cq)
 	TAILQ_INSERT_TAIL(cq, ex, ex_next);
 
 	DPRINTF("ex=%#jx done", (uintptr_t)ex, 0, 0, 0);
+	return true;
 }
 
 Static void
@@ -1920,6 +1937,8 @@ ehci_open(struct usbd_pipe *pipe)
 
 	if (sc->sc_dying)
 		return USBD_IOERROR;
+
+	epipe->intrcount = 0;
 
 	/* toggle state needed for bulk endpoints */
 	epipe->nexttoggle = pipe->up_endpoint->ue_toggle;
@@ -2761,6 +2780,7 @@ Static void
 ehci_root_intr_close(struct usbd_pipe *pipe)
 {
 	ehci_softc_t *sc __diagused = EHCI_PIPE2SC(pipe);
+	struct ehci_pipe *epipe __diagused = EHCI_PIPE2EPIPE(pipe);
 
 	EHCIHIST_FUNC(); EHCIHIST_CALLED();
 
@@ -2771,6 +2791,8 @@ ehci_root_intr_close(struct usbd_pipe *pipe)
 	 * closing the pipe only after normal completion or an abort.
 	 */
 	KASSERT(sc->sc_intrxfer == NULL);
+
+	KASSERT(epipe->intrcount == 0);
 }
 
 Static void
@@ -3209,6 +3231,7 @@ ehci_close_pipe(struct usbd_pipe *pipe, ehci_soft_qh_t *head)
 	ehci_soft_qh_t *sqh = epipe->sqh;
 
 	KASSERT(mutex_owned(&sc->sc_lock));
+	KASSERT(epipe->intrcount == 0);
 
 	ehci_rem_qh(sc, sqh, head);
 	ehci_free_sqh(sc, epipe->sqh);
@@ -4522,9 +4545,13 @@ ehci_device_fs_isoc_abort(struct usbd_xfer *xfer)
 Static void
 ehci_device_fs_isoc_close(struct usbd_pipe *pipe)
 {
+	struct ehci_pipe *epipe __diagused = EHCI_PIPE2EPIPE(pipe);
+
 	EHCIHIST_FUNC(); EHCIHIST_CALLED();
 
 	DPRINTF("nothing in the pipe to free?", 0, 0, 0, 0);
+
+	KASSERT(epipe->intrcount == 0);
 }
 
 Static void
@@ -4913,9 +4940,13 @@ ehci_device_isoc_abort(struct usbd_xfer *xfer)
 Static void
 ehci_device_isoc_close(struct usbd_pipe *pipe)
 {
+	struct ehci_pipe *epipe __diagused = EHCI_PIPE2EPIPE(pipe);
+
 	EHCIHIST_FUNC(); EHCIHIST_CALLED();
 
 	DPRINTF("nothing in the pipe to free?", 0, 0, 0, 0);
+
+	KASSERT(epipe->intrcount == 0);
 }
 
 Static void

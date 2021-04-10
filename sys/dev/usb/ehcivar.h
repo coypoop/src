@@ -205,7 +205,7 @@ typedef struct ehci_softc {
 	 */
 	struct ehci_soft_itd **sc_softitds;
 
-	TAILQ_HEAD(, ehci_xfer) sc_intrhead;
+	TAILQ_HEAD(, ehci_pipe) sc_intrhead;
 
 	ehci_soft_qh_t *sc_freeqhs;
 	ehci_soft_qtd_t *sc_freeqtds;
