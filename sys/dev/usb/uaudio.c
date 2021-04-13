@@ -2750,7 +2750,7 @@ uaudio_setup_formats(struct uaudio_softc *sc)
 
 	/* Allocate an audio_format array.  XXX arithmetic overflow  */
 	KASSERT(nalts <= SIZE_MAX/sizeof(sc->formats[0]));
-	sc->formats = kmem_alloc(nalts*sizeof(sc->formats[0]), KM_SLEEP);
+	sc->formats = kmem_zalloc(nalts*sizeof(sc->formats[0]), KM_SLEEP);
 	sc->nformats = nalts;
 	for (i = 0, alt = sc->alts; alt != NULL; alt = alt->next) {
 		auf = &sc->formats[i];
@@ -2778,6 +2778,7 @@ uaudio_setup_formats(struct uaudio_softc *sc)
 			if (rates & (1u << j))
 				auf->frequency[k++] = uaudio_rates[j];
 		}
+		auf->priority = 0;
 	}
 }
 
