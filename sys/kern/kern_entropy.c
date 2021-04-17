@@ -369,7 +369,7 @@ entropy_init(void)
 	    NULL, 0, &E->epoch, 0, CTL_CREATE, CTL_EOL);
 
 	/* Initialize the global state for multithreaded operation.  */
-	mutex_init(&E->lock, MUTEX_DEFAULT, IPL_VM);
+	mutex_init(&E->lock, MUTEX_DEFAULT, IPL_SCHED);
 	cv_init(&E->cv, "entropy");
 	selinit(&E->selq);
 	cv_init(&E->sourcelock_cv, "entsrclock");
