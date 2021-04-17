@@ -110,6 +110,7 @@ SDT_PROBE_DEFINE1(usb, device, xfer, start,  "struct usbd_xfer *"/*xfer*/);
 SDT_PROBE_DEFINE1(usb, device, xfer, preabort,  "struct usbd_xfer *"/*xfer*/);
 SDT_PROBE_DEFINE1(usb, device, xfer, abort,  "struct usbd_xfer *"/*xfer*/);
 SDT_PROBE_DEFINE1(usb, device, xfer, timeout,  "struct usbd_xfer *"/*xfer*/);
+SDT_PROBE_DEFINE1(usb, device, xfer, lost,  "struct usbd_xfer *"/*xfer*/);
 SDT_PROBE_DEFINE2(usb, device, xfer, done,
     "struct usbd_xfer *"/*xfer*/,
     "usbd_status"/*status*/);
@@ -1454,8 +1455,10 @@ usbd_xfer_trycomplete(struct usbd_xfer *xfer)
 	 * If software has completed it, either by synchronous abort or
 	 * by timeout, too late.
 	 */
-	if (xfer->ux_status != USBD_IN_PROGRESS)
+	if (xfer->ux_status != USBD_IN_PROGRESS) {
+		SDT_PROBE1(usb, device, xfer, lost,  xfer);
 		return false;
+	}
 
 	/*
 	 * We are completing the xfer.  Cancel the timeout if we can,
