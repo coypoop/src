@@ -108,6 +108,7 @@ ehci_fdt_attach(device_t parent, device_t self, void *aux)
 
 	sc->sc_dev = self;
 	sc->sc_bus.ub_hcpriv = sc;
+	sc->sc_bus.ub_device = self;
 	sc->sc_bus.ub_dmatag = faa->faa_dmat;
 	sc->sc_bus.ub_revision = USBREV_2_0;
 	if (of_hasprop(phandle, "has-transaction-translator"))

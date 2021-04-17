@@ -148,6 +148,7 @@ struct usbd_hub {
 struct usbd_bus {
 	/* Filled by HC driver */
 	void			*ub_hcpriv;
+	device_t		ub_device;
 	int			ub_revision;	/* USB revision */
 #define USBREV_UNKNOWN	0
 #define USBREV_PRE_1_0	1
