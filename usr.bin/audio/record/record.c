@@ -81,6 +81,7 @@ main(int argc, char *argv[])
 {
 	u_char	*buffer;
 	size_t	len, bufsize = 0;
+	ssize_t	nread;
 	int	ch, no_time_limit = 1;
 	const char *defdevice = _PATH_SOUND;
 
@@ -337,8 +338,12 @@ main(int argc, char *argv[])
 
 	(void)gettimeofday(&start_time, NULL);
 	while (no_time_limit || timeleft(&start_time, &record_time)) {
-		if ((size_t)read(audiofd, buffer, bufsize) != bufsize)
+		if ((nread = read(audiofd, buffer, bufsize)) == -1)
 			err(1, "read failed");
+		if (nread == 0)
+			errx(1, "read eof");
+		if ((size_t)nread != bufsize)
+			errx(1, "invalid read");
 		if (conv_func)
 			(*conv_func)(buffer, bufsize);
 		if ((size_t)write(ti.outfd, buffer, bufsize) != bufsize)
