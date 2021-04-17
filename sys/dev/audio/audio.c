@@ -168,6 +168,7 @@ __KERNEL_RCSID(0, "$NetBSD: audio.c,v 1.94 2021/04/26 19:59:58 thorpej Exp $");
 #include <sys/poll.h>
 #include <sys/proc.h>
 #include <sys/queue.h>
+#include <sys/sdt.h>
 #include <sys/select.h>
 #include <sys/signalvar.h>
 #include <sys/stat.h>
@@ -447,6 +448,8 @@ audio_track_bufstat(audio_track_t *track, struct audio_track_debugbuf *buf)
 #define TRACET(n, t, fmt, ...)	do { } while (0)
 #define TRACEF(n, f, fmt, ...)	do { } while (0)
 #endif
+
+SDT_PROVIDER_DEFINE(audio);
 
 #define SPECIFIED(x)	((x) != ~0)
 #define SPECIFIED_CH(x)	((x) != (u_char)~0)
@@ -853,6 +856,14 @@ audiomatch(device_t parent, cfdata_t match, void *aux)
 	return (sa->type == AUDIODEV_TYPE_AUDIO) ? 1 : 0;
 }
 
+SDT_PROBE_DEFINE2(audio, device, attach, start,
+    "struct audio_softc *"/*sc*/,
+    "struct audio_attach_args *"/*sa*/);
+SDT_PROBE_DEFINE1(audio, device, attach, done,
+    "struct audio_softc *"/*sc*/);
+SDT_PROBE_DEFINE1(audio, device, attach, error,
+    "struct audio_softc *"/*sc*/);
+
 static void
 audioattach(device_t parent, device_t self, void *aux)
 {
@@ -875,6 +886,7 @@ audioattach(device_t parent, device_t self, void *aux)
 	sc = device_private(self);
 	sc->sc_dev = self;
 	sa = (struct audio_attach_args *)aux;
+	SDT_PROBE2(audio, device, attach, start,  sc, sa);
 	hw_if = sa->hwif;
 	hdlp = sa->hdl;
 
@@ -883,6 +895,7 @@ audioattach(device_t parent, device_t self, void *aux)
 	}
 	if (hw_if->get_locks == NULL || hw_if->get_props == NULL) {
 		aprint_error(": missing mandatory method\n");
+		SDT_PROBE1(audio, device, attach, error,  sc);
 		return;
 	}
 
@@ -902,6 +915,7 @@ audioattach(device_t parent, device_t self, void *aux)
 	    hw_if->get_port == NULL ||
 	    hw_if->query_devinfo == NULL) {
 		aprint_error(": missing mandatory method\n");
+		SDT_PROBE1(audio, device, attach, error,  sc);
 		return;
 	}
 	if (has_playback) {
@@ -1113,6 +1127,7 @@ audioattach(device_t parent, device_t self, void *aux)
 
 	audiorescan(self, NULL, NULL);
 	sc->sc_exlock = 0;
+	SDT_PROBE1(audio, device, attach, done,  sc);
 	return;
 
 bad:
@@ -1120,6 +1135,7 @@ bad:
 	sc->hw_if = NULL;
 	sc->sc_exlock = 0;
 	aprint_error_dev(sc->sc_dev, "disabled\n");
+	SDT_PROBE1(audio, device, attach, error,  sc);
 	return;
 }
 
@@ -1285,6 +1301,12 @@ audioactivate(device_t self, enum devact act)
 	}
 }
 
+SDT_PROBE_DEFINE1(audio, device, detach, start,
+    "struct audio_softc *"/*sc*/);
+SDT_PROBE_DEFINE2(audio, device, detach, done,
+    "struct audio_softc *"/*sc*/,
+    "int"/*error*/);
+
 static int
 audiodetach(device_t self, int flags)
 {
@@ -1294,15 +1316,20 @@ audiodetach(device_t self, int flags)
 
 	sc = device_private(self);
 	TRACE(2, "flags=%d", flags);
+	SDT_PROBE1(audio, device, detach, start,  sc);
 
 	/* device is not initialized */
-	if (sc->hw_if == NULL)
+	if (sc->hw_if == NULL) {
+		SDT_PROBE2(audio, device, detach, done,  sc, 0);
 		return 0;
+	}
 
 	/* Start draining existing accessors of the device. */
 	error = config_detach_children(self, flags);
-	if (error)
+	if (error) {
+		SDT_PROBE2(audio, device, detach, done,  sc, error);
 		return error;
+	}
 
 	/*
 	 * This waits currently running sysctls to finish if exists.
@@ -1389,6 +1416,7 @@ audiodetach(device_t self, int flags)
 	audio_mlog_free();
 #endif
 
+	SDT_PROBE2(audio, device, detach, done,  sc, 0);
 	return 0;
 }
 
@@ -1602,6 +1630,14 @@ audio_sc_release(struct audio_softc *sc, struct psref *refp)
 	psref_release(refp, &sc->sc_psref, audio_psref_class);
 }
 
+SDT_PROBE_DEFINE2(audio, track, io, wait__start,
+    "struct audio_softc *"/*sc*/,
+    "struct audio_track *"/*track*/);
+SDT_PROBE_DEFINE3(audio, track, io, wait__done,
+    "struct audio_softc *"/*sc*/,
+    "struct audio_track *"/*track*/,
+    "int"/*error*/);
+
 /*
  * Wait for I/O to complete, releasing sc_lock.
  * Must be called with sc_lock held.
@@ -1614,6 +1650,8 @@ audio_track_waitio(struct audio_softc *sc, audio_track_t *track)
 	KASSERT(track);
 	KASSERT(mutex_owned(sc->sc_lock));
 
+	SDT_PROBE2(audio, track, io, wait__start,  sc, track);
+
 	/* Wait for pending I/O to complete. */
 	error = cv_timedwait_sig(&track->mixer->outcv, sc->sc_lock,
 	    mstohz(AUDIO_TIMEOUT));
@@ -1621,6 +1659,8 @@ audio_track_waitio(struct audio_softc *sc, audio_track_t *track)
 		/* If it's about to suspend, ignore timeout error. */
 		if (error == EWOULDBLOCK) {
 			TRACET(2, track, "timeout (suspending)");
+			SDT_PROBE3(audio, track, io, wait__done,
+			    sc, track, 0);
 			return 0;
 		}
 	}
@@ -1634,6 +1674,7 @@ audio_track_waitio(struct audio_softc *sc, audio_track_t *track)
 	} else {
 		TRACET(3, track, "wakeup");
 	}
+	SDT_PROBE3(audio, track, io, wait__done,  sc, track, error);
 	return error;
 }
 
@@ -1714,6 +1755,13 @@ done:
 	return error;
 }
 
+SDT_PROBE_DEFINE2(audio, file, close, start,
+    "struct audio_file *"/*file*/,
+    "struct audio_softc *"/*sc*/);
+SDT_PROBE_DEFINE2(audio, file, close, done,
+    "struct audio_file *"/*file*/,
+    "struct audio_softc *"/*sc*/);
+
 static int
 audioclose(struct file *fp)
 {
@@ -1738,6 +1786,7 @@ audioclose(struct file *fp)
 
 	bound = curlwp_bind();
 	sc = audio_sc_acquire_fromfile(file, &sc_ref);
+	SDT_PROBE2(audio, file, close, start,  file, sc);
 	if (sc) {
 		switch (AUDIODEV(dev)) {
 		case SOUND_DEVICE:
@@ -1761,6 +1810,7 @@ audioclose(struct file *fp)
 
 	/* Free memory objects anyway */
 	TRACEF(2, file, "free memory");
+	SDT_PROBE2(audio, file, close, done,  file, sc);
 	if (file->ptrack)
 		audio_track_destroy(file->ptrack);
 	if (file->rtrack)
@@ -1770,6 +1820,21 @@ audioclose(struct file *fp)
 
 	return error;
 }
+
+SDT_PROBE_DEFINE6(audio, file, read, start,
+    "struct audio_file *"/*file*/,
+    "struct audio_softc *"/*sc*/,
+    "off_t *"/*offp*/,
+    "struct uio *"/*uio*/,
+    "kauth_cred_t"/*cred*/,
+    "int"/*ioflag*/);
+SDT_PROBE_DEFINE6(audio, file, read, done,
+    "struct audio_file *"/*file*/,
+    "struct audio_softc *"/*sc*/,
+    "off_t *"/*offp*/,
+    "struct uio *"/*uio*/,
+    "kauth_cred_t"/*cred*/,
+    "int"/*ioflag*/);
 
 static int
 audioread(struct file *fp, off_t *offp, struct uio *uio, kauth_cred_t cred,
@@ -1795,6 +1860,8 @@ audioread(struct file *fp, off_t *offp, struct uio *uio, kauth_cred_t cred,
 
 	if (fp->f_flag & O_NONBLOCK)
 		ioflag |= IO_NDELAY;
+	SDT_PROBE6(audio, file, read, start,
+	    file, sc, offp, uio, cred, ioflag);
 
 	switch (AUDIODEV(dev)) {
 	case SOUND_DEVICE:
@@ -1810,11 +1877,28 @@ audioread(struct file *fp, off_t *offp, struct uio *uio, kauth_cred_t cred,
 		break;
 	}
 
+	SDT_PROBE6(audio, file, read, done,
+	    file, sc, offp, uio, cred, ioflag);
 	audio_sc_release(sc, &sc_ref);
 done:
 	curlwp_bindx(bound);
 	return error;
 }
+
+SDT_PROBE_DEFINE6(audio, file, write, start,
+    "struct audio_file *"/*file*/,
+    "struct audio_softc *"/*sc*/,
+    "off_t *"/*offp*/,
+    "struct uio *"/*uio*/,
+    "kauth_cred_t"/*cred*/,
+    "int"/*ioflag*/);
+SDT_PROBE_DEFINE6(audio, file, write, done,
+    "struct audio_file *"/*file*/,
+    "struct audio_softc *"/*sc*/,
+    "off_t *"/*offp*/,
+    "struct uio *"/*uio*/,
+    "kauth_cred_t"/*cred*/,
+    "int"/*ioflag*/);
 
 static int
 audiowrite(struct file *fp, off_t *offp, struct uio *uio, kauth_cred_t cred,
@@ -1840,6 +1924,8 @@ audiowrite(struct file *fp, off_t *offp, struct uio *uio, kauth_cred_t cred,
 
 	if (fp->f_flag & O_NONBLOCK)
 		ioflag |= IO_NDELAY;
+	SDT_PROBE6(audio, file, write, start,
+	    file, sc, offp, uio, cred, ioflag);
 
 	switch (AUDIODEV(dev)) {
 	case SOUND_DEVICE:
@@ -1855,11 +1941,24 @@ audiowrite(struct file *fp, off_t *offp, struct uio *uio, kauth_cred_t cred,
 		break;
 	}
 
+	SDT_PROBE6(audio, file, write, done,
+	    file, sc, offp, uio, cred, ioflag);
 	audio_sc_release(sc, &sc_ref);
 done:
 	curlwp_bindx(bound);
 	return error;
 }
+
+SDT_PROBE_DEFINE4(audio, file, ioctl, start,
+    "struct audio_file *"/*file*/,
+    "struct audio_softc *"/*sc*/,
+    "unsigned long"/*cmd*/,
+    "void *"/*data*/);
+SDT_PROBE_DEFINE4(audio, file, ioctl, done,
+    "struct audio_file *"/*file*/,
+    "struct audio_softc *"/*sc*/,
+    "unsigned long"/*cmd*/,
+    "void *"/*data*/);
 
 static int
 audioioctl(struct file *fp, u_long cmd, void *addr)
@@ -1882,6 +1981,7 @@ audioioctl(struct file *fp, u_long cmd, void *addr)
 		error = EIO;
 		goto done;
 	}
+	SDT_PROBE4(audio, file, ioctl, start,  file, sc, cmd, addr);
 
 	switch (AUDIODEV(dev)) {
 	case SOUND_DEVICE:
@@ -1904,6 +2004,7 @@ audioioctl(struct file *fp, u_long cmd, void *addr)
 		break;
 	}
 
+	SDT_PROBE4(audio, file, ioctl, done,  file, sc, cmd, addr);
 	audio_sc_release(sc, &sc_ref);
 done:
 	curlwp_bindx(bound);
@@ -2202,6 +2303,16 @@ done:
  * Audio driver
  */
 
+SDT_PROBE_DEFINE1(audio, device, open, start,
+    "struct audio_softc *"/*sc*/);
+SDT_PROBE_DEFINE2(audio, device, open, done,
+    "struct audio_softc *"/*sc*/,
+    "int"/*error*/);
+SDT_PROBE_DEFINE1(audio, device, close, start,
+    "struct audio_softc *"/*sc*/);
+SDT_PROBE_DEFINE1(audio, device, close, done,
+    "struct audio_softc *"/*sc*/);
+
 /*
  * Must be called with sc_exlock held and without sc_lock held.
  */
@@ -2351,7 +2462,9 @@ audio_open(dev_t dev, struct audio_softc *sc, int flags, int ifmt,
 
 			mutex_enter(sc->sc_lock);
 			mutex_enter(sc->sc_intr_lock);
+			SDT_PROBE1(audio, device, open, start,  sc);
 			error = sc->hw_if->open(sc->hw_hdl, hwflags);
+			SDT_PROBE2(audio, device, open, done,  sc, error);
 			mutex_exit(sc->sc_intr_lock);
 			mutex_exit(sc->sc_lock);
 			if (error)
@@ -2501,7 +2614,9 @@ bad:
 		if (sc->hw_if->close) {
 			mutex_enter(sc->sc_lock);
 			mutex_enter(sc->sc_intr_lock);
+			SDT_PROBE1(audio, device, close, start,  sc);
 			sc->hw_if->close(sc->hw_hdl);
+			SDT_PROBE1(audio, device, close, done,  sc);
 			mutex_exit(sc->sc_intr_lock);
 			mutex_exit(sc->sc_lock);
 		}
@@ -2641,7 +2756,9 @@ audio_unlink(struct audio_softc *sc, audio_file_t *file)
 		if (sc->hw_if->close) {
 			TRACE(2, "hw_if close");
 			mutex_enter(sc->sc_intr_lock);
+			SDT_PROBE1(audio, device, close, start,  sc);
 			sc->hw_if->close(sc->hw_hdl);
+			SDT_PROBE1(audio, device, close, done,  sc);
 			mutex_exit(sc->sc_intr_lock);
 		}
 	}
@@ -5617,6 +5734,15 @@ audio_pmixer_mix_track(audio_trackmixer_t *mixer, audio_track_t *track,
 	return mixed + 1;
 }
 
+SDT_PROBE_DEFINE3(audio, device, play, trigger,
+    "struct audio_softc *"/*sc*/,
+    "struct audio_params *"/*params*/,
+    "int"/*blksize*/);
+SDT_PROBE_DEFINE3(audio, device, record, trigger,
+    "struct audio_softc *"/*sc*/,
+    "struct audio_params *"/*params*/,
+    "int"/*blksize*/);
+
 /*
  * Output one block from hwbuf to HW.
  * Must be called with sc_intr_lock held.
@@ -5648,6 +5774,8 @@ audio_pmixer_output(struct audio_softc *sc)
 			end = (uint8_t *)start + auring_bytelen(&mixer->hwbuf);
 			params = format2_to_params(&mixer->hwbuf.fmt);
 
+			SDT_PROBE3(audio, device, play, trigger,
+			    sc, &params, blksize);
 			error = sc->hw_if->trigger_output(sc->hw_hdl,
 			    start, end, blksize, audio_pintr, sc, &params);
 			if (error) {
@@ -5661,6 +5789,8 @@ audio_pmixer_output(struct audio_softc *sc)
 		/* start (everytime) */
 		start = auring_headptr(&mixer->hwbuf);
 
+		SDT_PROBE3(audio, device, play, trigger,
+		    sc, NULL, blksize);
 		error = sc->hw_if->start_output(sc->hw_hdl,
 		    start, blksize, audio_pintr, sc);
 		if (error) {
@@ -5670,6 +5800,9 @@ audio_pmixer_output(struct audio_softc *sc)
 		}
 	}
 }
+
+SDT_PROBE_DEFINE1(audio, device, play, intr,
+    "struct audio_softc *"/*sc*/);
 
 /*
  * This is an interrupt handler for playback.
@@ -5696,6 +5829,8 @@ audio_pintr(void *arg)
 #endif
 		return;
 	}
+
+	SDT_PROBE1(audio, device, play, intr,  sc);
 
 	mixer = sc->sc_pmixer;
 	mixer->hw_complete_counter += mixer->frames_per_block;
@@ -5919,6 +6054,8 @@ audio_rmixer_input(struct audio_softc *sc)
 			end = (uint8_t *)start + auring_bytelen(&mixer->hwbuf);
 			params = format2_to_params(&mixer->hwbuf.fmt);
 
+			SDT_PROBE3(audio, device, record, trigger,
+			    sc, &params, blksize);
 			error = sc->hw_if->trigger_input(sc->hw_hdl,
 			    start, end, blksize, audio_rintr, sc, &params);
 			if (error) {
@@ -5932,6 +6069,8 @@ audio_rmixer_input(struct audio_softc *sc)
 		/* start (everytime) */
 		start = auring_tailptr(&mixer->hwbuf);
 
+		SDT_PROBE3(audio, device, record, trigger,
+		    sc, NULL, blksize);
 		error = sc->hw_if->start_input(sc->hw_hdl,
 		    start, blksize, audio_rintr, sc);
 		if (error) {
@@ -5941,6 +6080,9 @@ audio_rmixer_input(struct audio_softc *sc)
 		}
 	}
 }
+
+SDT_PROBE_DEFINE1(audio, device, record, intr,
+    "struct audio_softc *"/*sc*/);
 
 /*
  * This is an interrupt handler for recording.
@@ -5967,6 +6109,8 @@ audio_rintr(void *arg)
 #endif
 		return;
 	}
+
+	SDT_PROBE1(audio, device, record, intr,  sc);
 
 	mixer = sc->sc_rmixer;
 	mixer->hw_complete_counter += mixer->frames_per_block;
@@ -5995,6 +6139,9 @@ audio_rintr(void *arg)
 	kpreempt_enable();
 }
 
+SDT_PROBE_DEFINE1(audio, device, play, halt,
+    "struct audio_softc *"/*sc*/);
+
 /*
  * Halts playback mixer.
  * This function also clears related parameters, so call this function
@@ -6012,6 +6159,7 @@ audio_pmixer_halt(struct audio_softc *sc)
 	KASSERT(sc->sc_exlock);
 
 	mutex_enter(sc->sc_intr_lock);
+	SDT_PROBE1(audio, device, play, halt,  sc);
 	error = sc->hw_if->halt_output(sc->hw_hdl);
 
 	/* Halts anyway even if some error has occurred. */
@@ -6024,6 +6172,9 @@ audio_pmixer_halt(struct audio_softc *sc)
 
 	return error;
 }
+
+SDT_PROBE_DEFINE1(audio, device, record, halt,
+    "struct audio_softc *"/*sc*/);
 
 /*
  * Halts recording mixer.
@@ -6042,6 +6193,7 @@ audio_rmixer_halt(struct audio_softc *sc)
 	KASSERT(sc->sc_exlock);
 
 	mutex_enter(sc->sc_intr_lock);
+	SDT_PROBE1(audio, device, record, halt,  sc);
 	error = sc->hw_if->halt_input(sc->hw_hdl);
 
 	/* Halts anyway even if some error has occurred. */
