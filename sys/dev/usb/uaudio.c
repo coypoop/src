@@ -1457,6 +1457,8 @@ uaudio_process_unit(struct uaudio_softc *sc,
 		case UAUDIO_V2:
 			size = 4;
 			break;
+		default:
+			panic("no such uaudio version %d", sc->version);
 		}
 		DPRINTF("%02d: feature id = %d, nch = %d, size = %d\n",
 		    u->id, id, u->nch, size);
@@ -2550,6 +2552,8 @@ uaudio_process_as_format(struct uaudio_softc *sc,
 		 * clock source, so we're done.
 		 */
 		break;
+	default:
+		panic("bad usb audio version %d", sc->version);
 	}
 	a->bps = bps;
 	a->bits = bits;
