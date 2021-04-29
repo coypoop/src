@@ -77,6 +77,7 @@ __KERNEL_RCSID(0, "$NetBSD: ehci.c,v 1.285 2021/01/05 18:00:21 skrll Exp $");
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/reboot.h>
+#include <sys/sdt.h>
 
 #include <machine/endian.h>
 
@@ -1049,6 +1050,12 @@ ehci_check_sitd_intr(ehci_softc_t *sc, struct ehci_xfer *ex, ex_completeq_t *cq)
 	return ehci_idone(ex, cq);
 }
 
+SDT_PROBE_DEFINE4(sdt, ehci, interrupt, frame,
+    "struct ehci_softc *"/*sc*/,
+    "struct ehci_xfer *"/*ex*/,
+    "struct ehci_soft_itd *"/*itd*/,
+    "int"/*i*/);
+
 Static bool
 ehci_idone(struct ehci_xfer *ex, ex_completeq_t *cq)
 {
@@ -1122,6 +1129,8 @@ ehci_idone(struct ehci_xfer *ex, ex_completeq_t *cq)
 				if (nframes >= xfer->ux_nframes)
 					break;
 
+				SDT_PROBE4(sdt, ehci, interrupt, frame,
+				    sc, ex, itd, i);
 				status = le32toh(itd->itd.itd_ctl[i]);
 				len = EHCI_ITD_GET_LEN(status);
 				if (EHCI_ITD_GET_STATUS(status) != 0)
