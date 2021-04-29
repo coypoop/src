@@ -30,6 +30,7 @@
 #include <sys/systm.h>
 #include <sys/time.h>
 #include <sys/audioio.h>
+#include <sys/sdt.h>
 #include <dev/audio/audio_if.h>
 #include <dev/usb/usb.h>
 #include <dev/usb/usbdi.h>
@@ -40,6 +41,8 @@
 #include <dev/usb/usbdevs.h>
 
 #include <dev/usb/uaudioreg.h>
+
+#define	UAUDIO_DEBUG	1
 
 #ifdef UAUDIO_DEBUG
 #define DPRINTF(...)				\
@@ -319,6 +322,7 @@ struct uaudio_softc {
 #define UAUDIO_NXFERS_MIN	2
 #define UAUDIO_NXFERS_MAX	8
 		struct uaudio_xfer {
+			struct uaudio_softc *sc;
 			struct usbd_xfer *usb_xfer;
 			unsigned char *buf;
 			uint16_t *sizes;
@@ -459,9 +463,10 @@ static int uaudio_process_unit(struct uaudio_softc *,
     struct uaudio_blob,
     struct uaudio_unit **);
 
-static void uaudio_pdata_intr(struct usbd_xfer *, void *, usbd_status);
-static void uaudio_rdata_intr(struct usbd_xfer *, void *, usbd_status);
-static void uaudio_psync_intr(struct usbd_xfer *, void *, usbd_status);
+#define	STATIC
+STATIC void uaudio_pdata_intr(struct usbd_xfer *, void *, usbd_status);
+STATIC void uaudio_rdata_intr(struct usbd_xfer *, void *, usbd_status);
+STATIC void uaudio_psync_intr(struct usbd_xfer *, void *, usbd_status);
 
 #ifdef UAUDIO_DEBUG
 const char *uaudio_isoname(int isotype);
@@ -479,7 +484,7 @@ void uaudio_conf_print(struct uaudio_softc *sc);
  * 2 - audio(4) calls
  * 3 - transfers
  */
-int uaudio_debug = 1;
+int uaudio_debug = 0;
 #endif
 
 CFATTACH_DECL2_NEW(uaudio, sizeof(struct uaudio_softc),
@@ -2888,6 +2893,9 @@ uaudio_xfer_free(struct uaudio_softc *sc, struct uaudio_xfer *xfer,
 	}
 }
 
+SDT_PROBE_DEFINE1(sdt, uaudio, stream, close,
+    "struct uaudio_stream *"/*s*/);
+
 /*
  * Close a stream and free all associated resources
  */
@@ -2906,6 +2914,8 @@ uaudio_stream_close(struct uaudio_softc *sc, int dir)
 		s = &sc->rstream;
 		a = sc->params->ralt;
 	}
+
+	SDT_PROBE1(sdt, uaudio, stream, close,  sc);
 
 	if (s->data_pipe) {
 		usbd_abort_pipe(s->data_pipe);
@@ -2934,6 +2944,9 @@ uaudio_stream_close(struct uaudio_softc *sc, int dir)
 	}
 }
 
+SDT_PROBE_DEFINE1(sdt, uaudio, stream, open,
+    "struct uaudio_stream *"/*s*/);
+
 /*
  * Open a stream with the given buffer settings and set the current
  * interface alt setting.
@@ -2958,8 +2971,10 @@ uaudio_stream_open(struct uaudio_softc *sc, int dir,
 	}
 
 	for (i = 0; i < UAUDIO_NXFERS_MAX; i++) {
+		s->data_xfers[i].sc = sc;
 		s->data_xfers[i].usb_xfer = NULL;
 		s->data_xfers[i].sizes = NULL;
+		s->sync_xfers[i].sc = sc;
 		s->sync_xfers[i].usb_xfer = NULL;
 		s->sync_xfers[i].sizes = NULL;
 	}
@@ -3157,12 +3172,19 @@ uaudio_stream_open(struct uaudio_softc *sc, int dir,
 
 	s->ubuf_xfer = 0;
 	s->ubuf_pos = 0;
+	SDT_PROBE1(sdt, uaudio, stream, open,  s);
 	return 0;
 
 failed:
 	uaudio_stream_close(sc, dir);
 	return ENOMEM;
 }
+
+SDT_PROBE_DEFINE4(sdt, uaudio, stream, adjspf,
+    "struct uaudio_stream *"/*s*/,
+    "unsigned"/*ospf*/,
+    "int"/*diff*/,
+    "unsigned"/*nspf*/);
 
 /*
  * Adjust play samples-per-frame to keep play and rec streams in sync.
@@ -3172,6 +3194,7 @@ uaudio_adjspf(struct uaudio_softc *sc)
 {
 	struct uaudio_stream *s = &sc->pstream;
 	int diff;
+	unsigned spf;
 
 	KASSERT(mutex_owned(&sc->sc_intr_lock));
 
@@ -3195,11 +3218,13 @@ uaudio_adjspf(struct uaudio_softc *sc)
 	/*
 	 * adjust samples-per-frames to resync within the next second
 	 */
-	s->spf = (uint64_t)(sc->rate - diff) * UAUDIO_SPF_DIV / sc->ufps;
-	if (s->spf > s->spf_max)
-		s->spf = s->spf_max;
-	else if (s->spf < s->spf_min)
-		s->spf = s->spf_min;
+	spf = (uint64_t)(sc->rate - diff) * UAUDIO_SPF_DIV / sc->ufps;
+	if (spf > s->spf_max)
+		spf = s->spf_max;
+	else if (spf < s->spf_min)
+		spf = s->spf_min;
+	SDT_PROBE4(sdt, uaudio, stream, adjspf,  s, s->spf, diff, spf);
+	s->spf = spf;
 #ifdef UAUDIO_DEBUG
 	if (uaudio_debug >= 2)
 		printf("%s: diff = %d, spf = 0x%x\n", __func__, diff, s->spf);
@@ -3326,6 +3351,18 @@ uaudio_pdata_calcsizes(struct uaudio_softc *sc, struct uaudio_xfer *xfer)
 	memset(xfer->buf, 0, xfer->size);
 }
 
+#include <sys/cpu.h>
+
+SDT_PROBE_DEFINE3(sdt, uaudio, play, xfer,
+    "struct uaudio_softc *"/*sc*/,
+    "struct uaudio_xfer *"/*xfer*/,
+    "struct uaudio_stream *"/*s*/);
+SDT_PROBE_DEFINE4(sdt, uaudio, play, intr,
+    "struct uaudio_softc *"/*sc*/,
+    "struct uaudio_xfer *"/*xfer*/,
+    "struct uaudio_stream *"/*s*/,
+    "int"/*status*/);
+
 /*
  * Submit a play data transfer to the USB driver.
  */
@@ -3346,9 +3383,9 @@ uaudio_pdata_xfer(struct uaudio_softc *sc)
 #ifdef UAUDIO_DEBUG
 	if (uaudio_debug >= 3) {
 		getmicrotime(&tv);
-		printf("%s: %lu.%06u: "
+		printf("%s (cpu%u): %lu.%06u: "
 		    "%d bytes, %u frames, remain = 0x%x, offs = %d\n",
-		    __func__, tv.tv_sec, tv.tv_usec,
+		    __func__, cpu_number(), tv.tv_sec, tv.tv_usec,
 		    xfer->size, xfer->nframes,
 		    s->spf_remain, s->ring_offs);
 	}
@@ -3364,10 +3401,12 @@ uaudio_pdata_xfer(struct uaudio_softc *sc)
 	 * We accept short transfers because in case of babble/stale frames
 	 * the tranfer will be short
 	 */
-	usbd_setup_isoc_xfer(xfer->usb_xfer, sc,
+	usbd_setup_isoc_xfer(xfer->usb_xfer, xfer,
 	    xfer->sizes, xfer->nframes,
 	    USBD_SHORT_XFER_OK,
 	    uaudio_pdata_intr);
+
+	SDT_PROBE3(sdt, uaudio, play, xfer,  sc, xfer, s);
 
 	err = usbd_transfer(xfer->usb_xfer);
 	if (err != 0 && err != USBD_IN_PROGRESS)
@@ -3380,28 +3419,29 @@ uaudio_pdata_xfer(struct uaudio_softc *sc)
 /*
  * Callback called by the USB driver upon completion of play data transfer.
  */
-static void
+STATIC void
 uaudio_pdata_intr(struct usbd_xfer *usb_xfer, void *arg, usbd_status status)
 {
 #ifdef UAUDIO_DEBUG
 	struct timeval tv;
 #endif
-	struct uaudio_softc *sc = arg;
+	struct uaudio_xfer *xfer = arg;
+	struct uaudio_softc *sc = xfer->sc;
 	struct uaudio_stream *s = &sc->pstream;
-	struct uaudio_xfer *xfer;
 	uint32_t size;
 	int nintr;
 
 	mutex_enter(&sc->sc_intr_lock);
 
+	SDT_PROBE4(sdt, uaudio, play, intr,  sc, xfer, s, status);
+
 	if (status != 0 && status != USBD_IOERROR) {
-		DPRINTF("%s: xfer status = %d\n", __func__, status);
+		DPRINTF("%s (cpu%u): xfer status = %d\n", __func__, cpu_number(), status);
 		goto out;
 	}
 
-	xfer = s->data_xfers + s->data_nextxfer;
-	if (xfer->usb_xfer != usb_xfer) {
-		DPRINTF("%s: wrong xfer\n", __func__);
+	if (xfer != s->data_xfers + s->data_nextxfer) {
+		DPRINTF("%s (cpu%u): wrong xfer %zd, expected %u\n", __func__, cpu_number(), xfer - s->data_xfers, s->data_nextxfer);
 		goto out;
 	}
 
@@ -3412,9 +3452,8 @@ uaudio_pdata_intr(struct usbd_xfer *usb_xfer, void *arg, usbd_status status)
 #ifdef UAUDIO_DEBUG
 	if (uaudio_debug >= 2) {
 		getmicrotime(&tv);
-		printf("%s: %lu.%06u: %u: %u bytes\n",
-		    __func__, tv.tv_sec, tv.tv_usec,
-		    s->data_nextxfer, xfer->size);
+		printf("%s (cpu%u): xfer@%p: %lu.%06u: %u: %u bytes\n",
+		    __func__, cpu_number(), xfer, tv.tv_sec, tv.tv_usec, s->data_nextxfer, xfer->size);
 	}
 #endif
 	usbd_get_xfer_status(usb_xfer, NULL, NULL, &size, NULL);
@@ -3452,6 +3491,16 @@ uaudio_pdata_intr(struct usbd_xfer *usb_xfer, void *arg, usbd_status status)
 out:	mutex_exit(&sc->sc_intr_lock);
 }
 
+SDT_PROBE_DEFINE3(sdt, uaudio, sync, xfer,
+    "struct uaudio_softc *"/*sc*/,
+    "struct uaudio_xfer *"/*xfer*/,
+    "struct uaudio_stream *"/*s*/);
+SDT_PROBE_DEFINE4(sdt, uaudio, sync, intr,
+    "struct uaudio_softc *"/*sc*/,
+    "struct uaudio_xfer *"/*xfer*/,
+    "struct uaudio_stream *"/*s*/,
+    "int"/*status*/);
+
 /*
  * Submit a play sync transfer to the USB driver.
  */
@@ -3480,10 +3529,12 @@ uaudio_psync_xfer(struct uaudio_softc *sc)
 	memset(xfer->buf, 0xd0, sc->sync_pktsz * xfer->nframes);
 #endif
 
-	usbd_setup_isoc_xfer(xfer->usb_xfer, sc,
+	usbd_setup_isoc_xfer(xfer->usb_xfer, xfer,
 	    xfer->sizes, xfer->nframes,
 	    USBD_SHORT_XFER_OK,
 	    uaudio_psync_intr);
+
+	SDT_PROBE3(sdt, uaudio, sync, xfer,  sc, xfer, s);
 
 	err = usbd_transfer(xfer->usb_xfer);
 	if (err != 0 && err != USBD_IN_PROGRESS)
@@ -3495,7 +3546,7 @@ uaudio_psync_xfer(struct uaudio_softc *sc)
 #ifdef UAUDIO_DEBUG
 	if (uaudio_debug >= 3) {
 		getmicrotime(&tv);
-		printf("%s: %lu.%06u: %dB, %d fr\n", __func__,
+		printf("%s (cpu%u): %lu.%06u: %dB, %d fr\n", __func__, cpu_number(),
 		    tv.tv_sec, tv.tv_usec, sc->sync_pktsz, xfer->nframes);
 	}
 #endif
@@ -3504,29 +3555,30 @@ uaudio_psync_xfer(struct uaudio_softc *sc)
 /*
  * Callback called by the USB driver upon completion of play sync transfer.
  */
-static void
+STATIC void
 uaudio_psync_intr(struct usbd_xfer *usb_xfer, void *arg, usbd_status status)
 {
 #ifdef UAUDIO_DEBUG
 	struct timeval tv;
 #endif
-	struct uaudio_softc *sc = arg;
+	struct uaudio_xfer *xfer = arg;
+	struct uaudio_softc *sc = xfer->sc;
 	struct uaudio_stream *s = &sc->pstream;
-	struct uaudio_xfer *xfer;
 	unsigned char *buf;
 	unsigned int i;
 	int32_t val;
 
 	mutex_enter(&sc->sc_intr_lock);
 
+	SDT_PROBE4(sdt, uaudio, sync, intr,  sc, xfer, s, status);
+
 	if (status != 0) {
-		DPRINTF("%s: xfer status = %d\n", __func__, status);
+		DPRINTF("%s (cpu%u): xfer status = %d\n", __func__, cpu_number(), status);
 		goto out;
 	}
 
-	xfer = s->sync_xfers + s->sync_nextxfer;
-	if (xfer->usb_xfer != usb_xfer) {
-		DPRINTF("%s: wrong xfer\n", __func__);
+	if (xfer != s->sync_xfers + s->sync_nextxfer) {
+		DPRINTF("%s (cpu%u): wrong xfer %zd, expected %u\n", __func__, cpu_number(), xfer - s->sync_xfers, s->sync_nextxfer);
 		goto out;
 	}
 
@@ -3544,8 +3596,8 @@ uaudio_psync_intr(struct usbd_xfer *usb_xfer, void *arg, usbd_status status)
 #ifdef UAUDIO_DEBUG
 			if (uaudio_debug >= 2) {
 				getmicrotime(&tv);
-				printf("%s: %lu.%06u: spf: %08x\n",
-				    __func__, tv.tv_sec, tv.tv_usec, val);
+				printf("%s (cpu%u): %lu.%06u: spf: %08x\n",
+				    __func__, cpu_number(), tv.tv_sec, tv.tv_usec, val);
 			}
 #endif
 			if (val > s->spf_max)
@@ -3562,6 +3614,24 @@ uaudio_psync_intr(struct usbd_xfer *usb_xfer, void *arg, usbd_status status)
 
 out:	mutex_exit(&sc->sc_intr_lock);
 }
+
+SDT_PROBE_DEFINE3(sdt, uaudio, record, xfer,
+    "struct uaudio_softc *"/*sc*/,
+    "struct uaudio_xfer *"/*xfer*/,
+    "struct uaudio_stream *"/*s*/);
+SDT_PROBE_DEFINE4(sdt, uaudio, record, intr,
+    "struct uaudio_softc *"/*sc*/,
+    "struct uaudio_xfer *"/*xfer*/,
+    "struct uaudio_stream *"/*s*/,
+    "int"/*status*/);
+SDT_PROBE_DEFINE7(sdt, uaudio, record, frame,
+    "struct uaudio_softc *"/*sc*/,
+    "struct uaudio_xfer *"/*xfer*/,
+    "struct uaudio_stream *"/*s*/,
+    "unsigned"/*n*/,
+    "const void *"/*buf*/,
+    "unsigned"/*size*/,
+    "unsigned"/*paddedsize*/);
 
 /*
  * Submit a rec data transfer to the USB driver.
@@ -3623,9 +3693,9 @@ uaudio_rdata_xfer(struct uaudio_softc *sc)
 #ifdef UAUDIO_DEBUG
 	if (uaudio_debug >= 3) {
 		getmicrotime(&tv);
-		printf("%s: %lu.%06u: "
+		printf("%s (cpu%u): xfer@%p %lu.%06u: %u, "
 		    "%u fr, %d bytes (max %d), offs = %d\n",
-		    __func__, tv.tv_sec, tv.tv_usec,
+		    __func__, cpu_number(), xfer, tv.tv_sec, tv.tv_usec, s->data_nextxfer,
 		    xfer->nframes, xfer->size,
 		    s->maxpkt * xfer->nframes, s->ring_offs);
 	}
@@ -3640,9 +3710,12 @@ uaudio_rdata_xfer(struct uaudio_softc *sc)
 #ifdef UAUDIO_DEBUG
 	memset(xfer->buf, 0xd0, s->maxpkt * xfer->nframes);
 #endif
-	usbd_setup_isoc_xfer(xfer->usb_xfer, sc,
-	    xfer->sizes, xfer->nframes, USBD_SHORT_XFER_OK,
+	usbd_setup_isoc_xfer(xfer->usb_xfer, xfer,
+	    xfer->sizes, xfer->nframes,
+	    USBD_SHORT_XFER_OK,
 	    uaudio_rdata_intr);
+
+	SDT_PROBE3(sdt, uaudio, record, xfer,  sc, xfer, s);
 
 	err = usbd_transfer(xfer->usb_xfer);
 	if (err != 0 && err != USBD_IN_PROGRESS)
@@ -3655,31 +3728,32 @@ uaudio_rdata_xfer(struct uaudio_softc *sc)
 /*
  * Callback called by the USB driver upon completion of rec data transfer.
  */
-static void
+STATIC void
 uaudio_rdata_intr(struct usbd_xfer *usb_xfer, void *arg, usbd_status status)
 {
 #ifdef UAUDIO_DEBUG
 	struct timeval tv;
 #endif
-	struct uaudio_softc *sc = arg;
+	struct uaudio_xfer *xfer = arg;
+	struct uaudio_softc *sc = xfer->sc;
 	struct uaudio_stream *s = &sc->rstream;
 	struct uaudio_alt *a = sc->params->ralt;
-	struct uaudio_xfer *xfer;
 	unsigned char *buf, *framebuf;
 	unsigned int count, fsize, fsize_min, nframes, bpf;
 	unsigned int data_size, null_count;
-	unsigned int nintr;
+	unsigned int nintr = 0;
 
 	mutex_enter(&sc->sc_intr_lock);
 
-	if (status != 0) {
-		DPRINTF("%s: xfer status = %d\n", __func__, status);
+	SDT_PROBE4(sdt, uaudio, record, intr,  sc, xfer, s, status);
+
+	if (xfer != s->data_xfers + s->data_nextxfer) {
+		DPRINTF("%s (cpu%u): wrong xfer %zd, expected %u\n", __func__, cpu_number(), xfer - s->data_xfers, s->data_nextxfer);
 		goto out;
 	}
 
-	xfer = s->data_xfers + s->data_nextxfer;
-	if (xfer->usb_xfer != usb_xfer) {
-		DPRINTF("%s: wrong xfer\n", __func__);
+	if (status != 0) {
+		DPRINTF("%s (cpu%u): xfer status = %d\n", __func__, cpu_number(), status);
 		goto out;
 	}
 
@@ -3711,6 +3785,8 @@ uaudio_rdata_intr(struct usbd_xfer *usb_xfer, void *arg, usbd_status status)
 		 * boundary conditions
 		 */
 		buf = framebuf;
+		SDT_PROBE7(sdt, uaudio, record, frame,
+		    sc, xfer, s, nframes, buf, xfer->sizes[nframes], fsize);
 		while (fsize > 0) {
 			count = s->ring_end - s->ring_pos;
 			if (count > fsize)
@@ -3742,10 +3818,11 @@ uaudio_rdata_intr(struct usbd_xfer *usb_xfer, void *arg, usbd_status status)
 #ifdef UAUDIO_DEBUG
 	if (uaudio_debug >= 2) {
 		getmicrotime(&tv);
-		printf("%s: %lu.%06u: %u: "
-		    "%u bytes of %u, offs -> %d\n",
-		    __func__, tv.tv_sec, tv.tv_usec,
-		    s->data_nextxfer, data_size, xfer->size, s->ring_offs);
+		printf("%s: xfer@%p %lu.%06u: %u: "
+		    "%u bytes of %u, offs -> %d (%u blocks)\n",
+		    __func__, xfer, tv.tv_sec, tv.tv_usec,
+		    s->data_nextxfer, data_size, xfer->size, s->ring_offs,
+		    s->ring_icnt/s->ring_blksz);
 	}
 	if (null_count > 0) {
 		DPRINTF("%s: %u null frames out of %u: incomplete record xfer\n",
@@ -4162,6 +4239,11 @@ uaudio_round_blocksize(void *self, int blksz, int mode,
 	 * minimum block size is two transfers, see uaudio_stream_open()
 	 */
 	fps_min = sc->ufps;
+	DPRINTF("%s: fps=%u min=%u\n", __func__,
+	    (mode & AUMODE_PLAY ? sc->params->palt->fps
+		: mode & AUMODE_RECORD ? sc->params->ralt->fps
+		: 0),
+	    fps_min);
 	if (mode & AUMODE_PLAY) {
 		fps = sc->params->palt->fps;
 		if (fps_min > fps)
@@ -4178,8 +4260,17 @@ uaudio_round_blocksize(void *self, int blksz, int mode,
 	 * max block size is only limited by the number of frames the
 	 * host can schedule
 	 */
+#if 0
 	blksz_max = sc->rate * (sc->host_nframes / UAUDIO_NXFERS_MIN) /
 	    sc->ufps * 85 / 100;
+#else
+	blksz_max = 5760;
+#endif
+
+	DPRINTF("%s: blksz proposed=%u min=%u max=%u"
+	    " (rate=%u nframes=%u nxfersmin=%u ufps=%u)\n",
+	    __func__, blksz, blksz_min, blksz_max, sc->rate, sc->host_nframes,
+	    UAUDIO_NXFERS_MIN, sc->ufps);
 
 	if (blksz > blksz_max)
 		blksz = blksz_max;
