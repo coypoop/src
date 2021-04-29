@@ -4234,10 +4234,20 @@ uaudio_round_blocksize(void *self, int blksz, int mode,
     const struct audio_params *p)
 {
 	struct uaudio_softc *sc = self;
+	unsigned int bpf;
 	unsigned int fps, fps_min;
 	unsigned int blksz_max, blksz_min;
 
 	KASSERT(mutex_owned(&sc->sc_lock));
+
+	/*
+	 * Compute the number of bytes per frame; the bulk of this
+	 * subroutine works in units of frames, but the caller expects
+	 * units of bytes.
+	 */
+	bpf = p->channels * (p->precision/8);
+
+	blksz /= bpf;
 
 	/*
 	 * minimum block size is two transfers, see uaudio_stream_open()
@@ -4264,12 +4274,8 @@ uaudio_round_blocksize(void *self, int blksz, int mode,
 	 * max block size is only limited by the number of frames the
 	 * host can schedule
 	 */
-#if 0
 	blksz_max = sc->rate * (sc->host_nframes / UAUDIO_NXFERS_MIN) /
 	    sc->ufps * 85 / 100;
-#else
-	blksz_max = 5760;
-#endif
 
 	DPRINTF("%s: blksz proposed=%u min=%u max=%u"
 	    " (rate=%u nframes=%u nxfersmin=%u ufps=%u)\n",
@@ -4280,6 +4286,8 @@ uaudio_round_blocksize(void *self, int blksz, int mode,
 		blksz = blksz_max;
 	else if (blksz < blksz_min)
 		blksz = blksz_min;
+
+	blksz *= bpf;
 
 	return blksz;
 }
