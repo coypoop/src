@@ -3962,6 +3962,9 @@ uaudio_attach(device_t parent, device_t self, void *aux)
 	usb_config_descriptor_t *cdesc;
 	struct uaudio_blob desc;
 
+	aprint_normal("\n");
+	aprint_naive("\n");
+
 	mutex_init(&sc->sc_lock, MUTEX_DEFAULT, IPL_NONE);
 	mutex_init(&sc->sc_intr_lock, MUTEX_DEFAULT, IPL_SOFTUSB);
 
