@@ -31,6 +31,7 @@
 #include <sys/time.h>
 #include <sys/audioio.h>
 #include <sys/sdt.h>
+#include <sys/sysctl.h>
 #include <dev/audio/audio_if.h>
 #include <dev/usb/usb.h>
 #include <dev/usb/usbdi.h>
@@ -485,6 +486,21 @@ void uaudio_conf_print(struct uaudio_softc *sc);
  * 3 - transfers
  */
 int uaudio_debug = 0;
+
+SYSCTL_SETUP(sysctl_uaudio_debug, "sysctl hw.uaudio.debug setup")
+{
+	const struct sysctlnode *node = NULL;
+
+	sysctl_createv(clog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT, CTLTYPE_NODE, "hw", NULL,
+	    NULL, 0, NULL, 0, CTL_HW, CTL_EOL);
+	sysctl_createv(clog, 0, NULL, &node,
+	    CTLFLAG_PERMANENT, CTLTYPE_NODE, "uaudio", NULL,
+	    NULL, 0, NULL, 0, CTL_HW, CTL_CREATE, CTL_EOL);
+	sysctl_createv(clog, 0, &node, NULL,
+	    CTLFLAG_PERMANENT|CTLFLAG_READWRITE, CTLTYPE_INT, "debug", NULL,
+	    NULL, 0, &uaudio_debug, 0, CTL_CREATE, CTL_EOL);
+}
 #endif
 
 CFATTACH_DECL2_NEW(uaudio, sizeof(struct uaudio_softc),
