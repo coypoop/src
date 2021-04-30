@@ -3767,13 +3767,13 @@ uaudio_rdata_intr(struct usbd_xfer *usb_xfer, void *arg, usbd_status status)
 
 	SDT_PROBE4(sdt, uaudio, record, intr,  sc, xfer, s, status);
 
-	if (xfer != s->data_xfers + s->data_nextxfer) {
-		DPRINTF("%s (cpu%u): wrong xfer %zd, expected %u\n", __func__, cpu_number(), xfer - s->data_xfers, s->data_nextxfer);
+	if (status != 0) {
+		DPRINTF("%s (cpu%u): xfer status = %d\n", __func__, cpu_number(), status);
 		goto out;
 	}
 
-	if (status != 0) {
-		DPRINTF("%s (cpu%u): xfer status = %d\n", __func__, cpu_number(), status);
+	if (xfer != s->data_xfers + s->data_nextxfer) {
+		DPRINTF("%s (cpu%u): wrong xfer %zd, expected %u\n", __func__, cpu_number(), xfer - s->data_xfers, s->data_nextxfer);
 		goto out;
 	}
 
