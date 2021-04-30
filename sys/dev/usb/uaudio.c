@@ -2761,7 +2761,7 @@ uaudio_setup_formats(struct uaudio_softc *sc)
 	KASSERT(nalts <= SIZE_MAX/sizeof(sc->formats[0]));
 	sc->formats = kmem_zalloc(nalts*sizeof(sc->formats[0]), KM_SLEEP);
 	sc->nformats = nalts;
-	for (i = 0, alt = sc->alts; alt != NULL; alt = alt->next) {
+	for (i = 0, alt = sc->alts; alt != NULL; alt = alt->next, i++) {
 		auf = &sc->formats[i];
 
 		/* XXX */
