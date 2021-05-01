@@ -389,6 +389,13 @@ ld_sdmmc_detach(device_t dev, int flags)
 	/* Done!  Destroy the disk.  */
 	ldenddetach(ld);
 
+	/* Flush the cache.  */
+	device_printf(sc->sc_ld.sc_dv, "%s: flush cache\n", __func__);
+	error = sdmmc_mem_flush_cache(sc->sc_sf, /*poll*/false);
+	if (error)
+		device_printf(sc->sc_ld.sc_dv, "cache flush failed: %d\n",
+		    error);
+
 	KASSERT(TAILQ_EMPTY(&sc->sc_xferq));
 
 	for (i = 0; i < __arraycount(sc->sc_task); i++)
