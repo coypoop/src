@@ -310,6 +310,23 @@ ld_sdmmc_attach(device_t parent, device_t self, void *aux)
 	}
 }
 
+static bool
+ld_sdmmc_shutdown(device_t self, int how)
+{
+	struct ld_sdmmc_softc *sc = device_private(self);
+	int error;
+
+	/* Flush the cache.  */
+	device_printf(sc->sc_ld.sc_dv, "%s: flush cache\n", __func__);
+	error = sdmmc_mem_flush_cache(sc->sc_sf, /*poll*/false);
+	if (error)
+		device_printf(sc->sc_ld.sc_dv, "cache flush failed: %d\n",
+		    error);
+
+	/* Success!  */
+	return true;
+}
+
 static void
 ld_sdmmc_doattach(void *arg)
 {
@@ -335,6 +352,8 @@ ld_sdmmc_doattach(void *arg)
 	else
 		aprint_normal(" %u KHz\n", ssc->sc_busclk % 1000);
 	config_pending_decr(ld->sc_dv);
+	if (pmf_device_register1(ld->sc_dv, NULL, NULL, ld_sdmmc_shutdown))
+		aprint_error_dev(ld->sc_dv, "couldn't establish shutdown\n");
 	kthread_exit(0);
 }
 
