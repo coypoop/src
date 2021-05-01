@@ -409,15 +409,20 @@ ohci_alloc_sed(ohci_softc_t *sc)
 		DPRINTFN(2, "allocating chunk", 0, 0, 0, 0);
 		mutex_exit(&sc->sc_lock);
 
-		int err = usb_allocmem(&sc->sc_bus, OHCI_SED_SIZE * OHCI_SED_CHUNK,
+		int err = usb_allocmem(&sc->sc_bus, OHCI_ED_SIZE * OHCI_ED_CHUNK,
 		    OHCI_ED_ALIGN, 0 /*!USBMALLOC_COHERENT*/, &dma);
 		if (err)
 			return NULL;
 
+		ohci_soft_ed_t *seds =
+		    kmem_alloc(sizeof(*sed) * OHCI_ED_CHUNK, KM_SLEEP);
+
 		mutex_enter(&sc->sc_lock);
-		for (i = 0; i < OHCI_SED_CHUNK; i++) {
-			offs = i * OHCI_SED_SIZE;
-			sed = KERNADDR(&dma, offs);
+		for (i = 0; i < OHCI_ED_CHUNK; i++) {
+			sed = &seds[i];
+
+			offs = i * OHCI_ED_SIZE;
+			sed->ed = KERNADDR(&dma, offs);
 			sed->physaddr = DMAADDR(&dma, offs);
 			sed->dma = dma;
 			sed->offs = offs;
@@ -429,7 +434,7 @@ ohci_alloc_sed(ohci_softc_t *sc)
 	sc->sc_freeeds = sed->next;
 	mutex_exit(&sc->sc_lock);
 
-	memset(&sed->ed, 0, sizeof(ohci_ed_t));
+	memset(sed->ed, 0, sizeof(*sed->ed));
 	sed->next = 0;
 	return sed;
 }
@@ -467,19 +472,25 @@ ohci_alloc_std(ohci_softc_t *sc)
 		DPRINTFN(2, "allocating chunk", 0, 0, 0, 0);
 		mutex_exit(&sc->sc_lock);
 
-		int err = usb_allocmem(&sc->sc_bus, OHCI_STD_SIZE * OHCI_STD_CHUNK,
+		int err = usb_allocmem(&sc->sc_bus, OHCI_TD_SIZE * OHCI_TD_CHUNK,
 		   OHCI_TD_ALIGN, USBMALLOC_COHERENT, &dma);
 		if (err)
 			return NULL;
 
+		ohci_soft_td_t *stds =
+		    kmem_alloc(sizeof(*std) * OHCI_TD_CHUNK, KM_SLEEP);
+
 		mutex_enter(&sc->sc_lock);
-		for (i = 0; i < OHCI_STD_CHUNK; i++) {
-			offs = i * OHCI_STD_SIZE;
-			std = KERNADDR(&dma, offs);
+		for (i = 0; i < OHCI_TD_CHUNK; i++) {
+			std = &stds[i];
+			offs = i * OHCI_TD_SIZE;
+
+			std->td = KERNADDR(&dma, offs);
 			std->physaddr = DMAADDR(&dma, offs);
 			std->dma = dma;
 			std->offs = offs;
 			std->nexttd = sc->sc_freetds;
+
 			sc->sc_freetds = std;
 		}
 	}
@@ -488,7 +499,7 @@ ohci_alloc_std(ohci_softc_t *sc)
 	sc->sc_freetds = std->nexttd;
 	mutex_exit(&sc->sc_lock);
 
-	memset(&std->td, 0, sizeof(ohci_td_t));
+	memset(std->td, 0, sizeof(*std->td));
 	std->nexttd = NULL;
 	std->xfer = NULL;
 	std->held = NULL;
@@ -651,10 +662,10 @@ ohci_reset_std_chain(ohci_softc_t *sc, struct usbd_xfer *xfer,
 		DPRINTFN(4, "sdataphys=0x%08jx edataphys=0x%08jx "
 		    "len=%jd curlen=%jd", sdataphys, edataphys, len, curlen);
 
-		cur->td.td_flags = tdflags;
-		cur->td.td_cbp = HTOO32(sdataphys);
-		cur->td.td_be = HTOO32(edataphys);
-		cur->td.td_nexttd = (next != NULL) ? HTOO32(next->physaddr) : 0;
+		cur->td->td_flags = tdflags;
+		cur->td->td_cbp = HTOO32(sdataphys);
+		cur->td->td_be = HTOO32(edataphys);
+		cur->td->td_nexttd = (next != NULL) ? HTOO32(next->physaddr) : 0;
 		cur->nexttd = next;
 		cur->len = curlen;
 		cur->flags = OHCI_ADD_LEN;
@@ -673,7 +684,7 @@ ohci_reset_std_chain(ohci_softc_t *sc, struct usbd_xfer *xfer,
 			cur = next;
 		}
 	}
-	cur->td.td_flags |=
+	cur->td->td_flags |=
 	    HTOO32(xfer->ux_flags & USBD_SHORT_XFER_OK ? OHCI_TD_R : 0);
 
 	if (!rd &&
@@ -688,10 +699,10 @@ ohci_reset_std_chain(ohci_softc_t *sc, struct usbd_xfer *xfer,
 		KASSERT(next != NULL);
 		cur = next;
 
-		cur->td.td_flags = tdflags;
-		cur->td.td_cbp = 0; /* indicate 0 length packet */
-		cur->td.td_nexttd = 0;
-		cur->td.td_be = ~0;
+		cur->td->td_flags = tdflags;
+		cur->td->td_cbp = 0; /* indicate 0 length packet */
+		cur->td->td_nexttd = 0;
+		cur->td->td_be = ~0;
 		cur->nexttd = NULL;
 		cur->len = 0;
 		cur->flags = 0;
@@ -719,18 +730,25 @@ ohci_alloc_sitd(ohci_softc_t *sc)
 		DPRINTFN(2, "allocating chunk", 0, 0, 0, 0);
 		mutex_exit(&sc->sc_lock);
 
-		int err = usb_allocmem(&sc->sc_bus, OHCI_SITD_SIZE * OHCI_SITD_CHUNK,
+		int err = usb_allocmem(&sc->sc_bus, OHCI_ITD_SIZE * OHCI_ITD_CHUNK,
 		    OHCI_ITD_ALIGN, USBMALLOC_COHERENT, &dma);
 		if (err)
 			return NULL;
+
+		ohci_soft_itd_t *sitds =
+		    kmem_alloc(sizeof(*sitd) * OHCI_ITD_CHUNK, KM_SLEEP);
+
 		mutex_enter(&sc->sc_lock);
-		for (i = 0; i < OHCI_SITD_CHUNK; i++) {
-			offs = i * OHCI_SITD_SIZE;
-			sitd = KERNADDR(&dma, offs);
+		for (i = 0; i < OHCI_ITD_CHUNK; i++) {
+			sitd = &sitds[i];
+			offs = i * OHCI_ITD_SIZE;
+
+			sitd->itd = KERNADDR(&dma, offs);
 			sitd->physaddr = DMAADDR(&dma, offs);
 			sitd->dma = dma;
 			sitd->offs = offs;
 			sitd->nextitd = sc->sc_freeitds;
+
 			sc->sc_freeitds = sitd;
 		}
 	}
@@ -739,7 +757,7 @@ ohci_alloc_sitd(ohci_softc_t *sc)
 	sc->sc_freeitds = sitd->nextitd;
 	mutex_exit(&sc->sc_lock);
 
-	memset(&sitd->itd, 0, sizeof(ohci_itd_t));
+	memset(sitd->itd, 0, sizeof(*sitd->itd));
 	sitd->nextitd = NULL;
 	sitd->xfer = NULL;
 
@@ -843,7 +861,7 @@ ohci_init(ohci_softc_t *sc)
 		err = ENOMEM;
 		goto bad1;
 	}
-	sc->sc_ctrl_head->ed.ed_flags |= HTOO32(OHCI_ED_SKIP);
+	sc->sc_ctrl_head->ed->ed_flags |= HTOO32(OHCI_ED_SKIP);
 
 	/* Allocate dummy ED that starts the bulk list. */
 	sc->sc_bulk_head = ohci_alloc_sed(sc);
@@ -851,7 +869,7 @@ ohci_init(ohci_softc_t *sc)
 		err = ENOMEM;
 		goto bad2;
 	}
-	sc->sc_bulk_head->ed.ed_flags |= HTOO32(OHCI_ED_SKIP);
+	sc->sc_bulk_head->ed->ed_flags |= HTOO32(OHCI_ED_SKIP);
 	usb_syncmem(&sc->sc_bulk_head->dma, sc->sc_bulk_head->offs,
 	    sizeof(sc->sc_bulk_head->ed),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
@@ -862,7 +880,7 @@ ohci_init(ohci_softc_t *sc)
 		err = ENOMEM;
 		goto bad3;
 	}
-	sc->sc_isoc_head->ed.ed_flags |= HTOO32(OHCI_ED_SKIP);
+	sc->sc_isoc_head->ed->ed_flags |= HTOO32(OHCI_ED_SKIP);
 	usb_syncmem(&sc->sc_isoc_head->dma, sc->sc_isoc_head->offs,
 	    sizeof(sc->sc_isoc_head->ed),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
@@ -878,13 +896,13 @@ ohci_init(ohci_softc_t *sc)
 		}
 		/* All ED fields are set to 0. */
 		sc->sc_eds[i] = sed;
-		sed->ed.ed_flags |= HTOO32(OHCI_ED_SKIP);
+		sed->ed->ed_flags |= HTOO32(OHCI_ED_SKIP);
 		if (i != 0)
 			psed = sc->sc_eds[(i-1) / 2];
 		else
 			psed= sc->sc_isoc_head;
 		sed->next = psed;
-		sed->ed.ed_nexted = HTOO32(psed->physaddr);
+		sed->ed->ed_nexted = HTOO32(psed->physaddr);
 		usb_syncmem(&sed->dma, sed->offs, sizeof(sed->ed),
 		    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 	}
@@ -1469,7 +1487,7 @@ ohci_softintr(void *v)
 			usb_syncmem(&std->dma, std->offs, sizeof(std->td),
 			    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
 			std->dnext = sdone;
-			done = O32TOH(std->td.td_nexttd);
+			done = O32TOH(std->td->td_nexttd);
 			sdone = std;
 			DPRINTFN(10, "add TD %#jx", (uintptr_t)std, 0, 0, 0);
 			continue;
@@ -1479,7 +1497,7 @@ ohci_softintr(void *v)
 			usb_syncmem(&sitd->dma, sitd->offs, sizeof(sitd->itd),
 			    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
 			sitd->dnext = sidone;
-			done = O32TOH(sitd->itd.itd_nextitd);
+			done = O32TOH(sitd->itd->itd_nextitd);
 			sidone = sitd;
 			DPRINTFN(5, "add ITD %#jx", (uintptr_t)sitd, 0, 0, 0);
 			continue;
@@ -1532,14 +1550,14 @@ ohci_softintr(void *v)
 			continue;
 
 		len = std->len;
-		if (std->td.td_cbp != 0)
-			len -= O32TOH(std->td.td_be) -
-			       O32TOH(std->td.td_cbp) + 1;
+		if (std->td->td_cbp != 0)
+			len -= O32TOH(std->td->td_be) -
+			       O32TOH(std->td->td_cbp) + 1;
 		DPRINTFN(10, "len=%jd, flags=%#jx", len, std->flags, 0, 0);
 		if (std->flags & OHCI_ADD_LEN)
 			xfer->ux_actlen += len;
 
-		cc = OHCI_TD_GET_CC(O32TOH(std->td.td_flags));
+		cc = OHCI_TD_GET_CC(O32TOH(std->td->td_flags));
 		if (cc == OHCI_CC_NO_ERROR) {
 			ohci_hash_rem_td(sc, std);
 			if (std->flags & OHCI_CALL_DONE) {
@@ -1566,11 +1584,11 @@ ohci_softintr(void *v)
 			ohci_soft_ed_t *sed = opipe->sed;
 
 			/* clear halt and TD chain, preserving toggle carry */
-			sed->ed.ed_headp = HTOO32(p->physaddr |
-			    (O32TOH(sed->ed.ed_headp) & OHCI_TOGGLECARRY));
+			sed->ed->ed_headp = HTOO32(p->physaddr |
+			    (O32TOH(sed->ed->ed_headp) & OHCI_TOGGLECARRY));
 			usb_syncmem(&sed->dma,
 			    sed->offs + offsetof(ohci_ed_t, ed_headp),
-			    sizeof(sed->ed.ed_headp),
+			    sizeof(sed->ed->ed_headp),
 			    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 
 			OWRITE4(sc, OHCI_COMMAND_STATUS, OHCI_CLF);
@@ -1626,17 +1644,17 @@ ohci_softintr(void *v)
 			    sitd = next) {
 				next = sitd->nextitd;
 				if (OHCI_ITD_GET_CC(O32TOH(sitd->
-				    itd.itd_flags)) != OHCI_CC_NO_ERROR)
+				    itd->itd_flags)) != OHCI_CC_NO_ERROR)
 					xfer->ux_status = USBD_IOERROR;
 				/* For input, update frlengths with actual */
 				/* XXX anything necessary for output? */
 				if (uedir == UE_DIR_IN &&
 				    xfer->ux_status == USBD_NORMAL_COMPLETION) {
 					iframes = OHCI_ITD_GET_FC(O32TOH(
-					    sitd->itd.itd_flags));
+					    sitd->itd->itd_flags));
 					for (j = 0; j < iframes; i++, j++) {
 						len = O16TOH(sitd->
-						    itd.itd_offset[j]);
+						    itd->itd_offset[j]);
 						if ((OHCI_ITD_PSW_GET_CC(len) &
 						    OHCI_CC_NOT_ACCESSED_MASK)
 						    == OHCI_CC_NOT_ACCESSED)
@@ -1822,17 +1840,17 @@ ohci_add_ed(ohci_softc_t *sc, ohci_soft_ed_t *sed, ohci_soft_ed_t *head)
 	KASSERT(mutex_owned(&sc->sc_lock));
 
 	usb_syncmem(&head->dma, head->offs + offsetof(ohci_ed_t, ed_nexted),
-	    sizeof(head->ed.ed_nexted),
+	    sizeof(head->ed->ed_nexted),
 	    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
 	sed->next = head->next;
-	sed->ed.ed_nexted = head->ed.ed_nexted;
+	sed->ed->ed_nexted = head->ed->ed_nexted;
 	usb_syncmem(&sed->dma, sed->offs + offsetof(ohci_ed_t, ed_nexted),
-	    sizeof(sed->ed.ed_nexted),
+	    sizeof(sed->ed->ed_nexted),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 	head->next = sed;
-	head->ed.ed_nexted = HTOO32(sed->physaddr);
+	head->ed->ed_nexted = HTOO32(sed->physaddr);
 	usb_syncmem(&head->dma, head->offs + offsetof(ohci_ed_t, ed_nexted),
-	    sizeof(head->ed.ed_nexted),
+	    sizeof(head->ed->ed_nexted),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 }
 
@@ -1852,12 +1870,12 @@ ohci_rem_ed(ohci_softc_t *sc, ohci_soft_ed_t *sed, ohci_soft_ed_t *head)
 	KASSERT(p != NULL);
 
 	usb_syncmem(&sed->dma, sed->offs + offsetof(ohci_ed_t, ed_nexted),
-	    sizeof(sed->ed.ed_nexted),
+	    sizeof(sed->ed->ed_nexted),
 	    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
 	p->next = sed->next;
-	p->ed.ed_nexted = sed->ed.ed_nexted;
+	p->ed->ed_nexted = sed->ed->ed_nexted;
 	usb_syncmem(&p->dma, p->offs + offsetof(ohci_ed_t, ed_nexted),
-	    sizeof(p->ed.ed_nexted),
+	    sizeof(p->ed->ed_nexted),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 }
 
@@ -1971,7 +1989,7 @@ ohci_dump_td(ohci_softc_t *sc, ohci_soft_td_t *std)
 	usb_syncmem(&std->dma, std->offs, sizeof(std->td),
 	    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
 
-	uint32_t flags = O32TOH(std->td.td_flags);
+	uint32_t flags = O32TOH(std->td->td_flags);
 	DPRINTF("TD(%#jx) at 0x%08jx:", (uintptr_t)std, std->physaddr, 0, 0);
 	DPRINTF("    round=%jd DP=%jx DI=%jx T=%jx",
 	    !!(flags & OHCI_TD_R),
@@ -1981,9 +1999,9 @@ ohci_dump_td(ohci_softc_t *sc, ohci_soft_td_t *std)
 	DPRINTF("    EC=%jd CC=%jd", OHCI_TD_GET_EC(flags),
 	    OHCI_TD_GET_CC(flags), 0, 0);
 	DPRINTF("    td_cbp=0x%08jx td_nexttd=0x%08jx td_be=0x%08jx",
-	       (u_long)O32TOH(std->td.td_cbp),
-	       (u_long)O32TOH(std->td.td_nexttd),
-	       (u_long)O32TOH(std->td.td_be), 0);
+	       (u_long)O32TOH(std->td->td_cbp),
+	       (u_long)O32TOH(std->td->td_nexttd),
+	       (u_long)O32TOH(std->td->td_be), 0);
 }
 
 void
@@ -1994,28 +2012,28 @@ ohci_dump_itd(ohci_softc_t *sc, ohci_soft_itd_t *sitd)
 	usb_syncmem(&sitd->dma, sitd->offs, sizeof(sitd->itd),
 	    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
 
-	uint32_t flags = O32TOH(sitd->itd.itd_flags);
+	uint32_t flags = O32TOH(sitd->itd->itd_flags);
 	DPRINTF("ITD(%#jx) at 0x%08jx", (uintptr_t)sitd, sitd->physaddr, 0, 0);
 	DPRINTF("    sf=%jd di=%jd fc=%jd cc=%jd",
 	    OHCI_ITD_GET_SF(flags), OHCI_ITD_GET_DI(flags),
 	    OHCI_ITD_GET_FC(flags), OHCI_ITD_GET_CC(flags));
 	DPRINTF("    bp0=0x%08jx next=0x%08jx be=0x%08jx",
-	    O32TOH(sitd->itd.itd_bp0),
-	    O32TOH(sitd->itd.itd_nextitd),
-	    O32TOH(sitd->itd.itd_be), 0);
+	    O32TOH(sitd->itd->itd_bp0),
+	    O32TOH(sitd->itd->itd_nextitd),
+	    O32TOH(sitd->itd->itd_be), 0);
 	CTASSERT(OHCI_ITD_NOFFSET == 8);
 	DPRINTF("    offs[0] = 0x%04jx  offs[1] = 0x%04jx  "
 	    "offs[2] = 0x%04jx  offs[3] = 0x%04jx",
-	    O16TOH(sitd->itd.itd_offset[0]),
-	    O16TOH(sitd->itd.itd_offset[1]),
-	    O16TOH(sitd->itd.itd_offset[2]),
-	    O16TOH(sitd->itd.itd_offset[3]));
+	    O16TOH(sitd->itd->itd_offset[0]),
+	    O16TOH(sitd->itd->itd_offset[1]),
+	    O16TOH(sitd->itd->itd_offset[2]),
+	    O16TOH(sitd->itd->itd_offset[3]));
 	DPRINTF("    offs[4] = 0x%04jx  offs[5] = 0x%04jx  "
 	    "offs[6] = 0x%04jx  offs[7] = 0x%04jx",
-	    O16TOH(sitd->itd.itd_offset[4]),
-	    O16TOH(sitd->itd.itd_offset[5]),
-	    O16TOH(sitd->itd.itd_offset[6]),
-	    O16TOH(sitd->itd.itd_offset[7]));
+	    O16TOH(sitd->itd->itd_offset[4]),
+	    O16TOH(sitd->itd->itd_offset[5]),
+	    O16TOH(sitd->itd->itd_offset[6]),
+	    O16TOH(sitd->itd->itd_offset[7]));
 }
 
 void
@@ -2033,7 +2051,7 @@ ohci_dump_ed(ohci_softc_t *sc, ohci_soft_ed_t *sed)
 	usb_syncmem(&sed->dma, sed->offs, sizeof(sed->ed),
 	    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
 
-	uint32_t flags = O32TOH(sed->ed.ed_flags);
+	uint32_t flags = O32TOH(sed->ed->ed_flags);
 	DPRINTF("ED(%#jx) at 0x%08jx:", (uintptr_t)sed, sed->physaddr, 0, 0);
 	DPRINTF("    addr=%jd endpt=%jd maxp=%jd",
 	    OHCI_ED_GET_FA(flags),
@@ -2045,12 +2063,12 @@ ohci_dump_ed(ohci_softc_t *sc, ohci_soft_ed_t *sed)
 	    __SHIFTOUT(flags, OHCI_ED_SPEED),
 	    __SHIFTOUT(flags, OHCI_ED_SKIP),
 	    OHCI_ED_GET_FORMAT(flags));
-	DPRINTF("    tailp=0x%08jx", (u_long)O32TOH(sed->ed.ed_tailp),
+	DPRINTF("    tailp=0x%08jx", (u_long)O32TOH(sed->ed->ed_tailp),
 	    0, 0, 0);
 	DPRINTF("    headp=0x%08jx nexted=0x%08jx halted=%jd carry=%jd",
-	    O32TOH(sed->ed.ed_headp), O32TOH(sed->ed.ed_nexted),
-	    !!(O32TOH(sed->ed.ed_headp) & OHCI_HALTED),
-	    !!(O32TOH(sed->ed.ed_headp) & OHCI_TOGGLECARRY));
+	    O32TOH(sed->ed->ed_headp), O32TOH(sed->ed->ed_nexted),
+	    !!(O32TOH(sed->ed->ed_headp) & OHCI_HALTED),
+	    !!(O32TOH(sed->ed->ed_headp) & OHCI_TOGGLECARRY));
 }
 #endif
 
@@ -2125,15 +2143,15 @@ ohci_open(struct usbd_pipe *pipe)
 			    OHCI_ED_SET_FORMAT(OHCI_ED_FORMAT_GEN) |
 			    OHCI_ED_SET_DIR(OHCI_ED_DIR_TD);
 		}
-		sed->ed.ed_flags = HTOO32(
+		sed->ed->ed_flags = HTOO32(
 			OHCI_ED_SET_FA(addr) |
 			OHCI_ED_SET_EN(UE_GET_ADDR(ed->bEndpointAddress)) |
 			(dev->ud_speed == USB_SPEED_LOW ? OHCI_ED_SPEED : 0) |
 			fmt |
 			OHCI_ED_SET_MAXP(UGETW(ed->wMaxPacketSize)));
-		sed->ed.ed_headp = HTOO32(tdphys |
+		sed->ed->ed_headp = HTOO32(tdphys |
 		    (pipe->up_endpoint->ue_toggle ? OHCI_TOGGLECARRY : 0));
-		sed->ed.ed_tailp = HTOO32(tdphys);
+		sed->ed->ed_tailp = HTOO32(tdphys);
 		usb_syncmem(&sed->dma, sed->offs, sizeof(sed->ed),
 		    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 
@@ -2197,15 +2215,15 @@ ohci_close_pipe(struct usbd_pipe *pipe, ohci_soft_ed_t *head)
 	KASSERT(mutex_owned(&sc->sc_lock));
 
 #ifdef DIAGNOSTIC
-	sed->ed.ed_flags |= HTOO32(OHCI_ED_SKIP);
-	if ((O32TOH(sed->ed.ed_tailp) & OHCI_HEADMASK) !=
-	    (O32TOH(sed->ed.ed_headp) & OHCI_HEADMASK)) {
+	sed->ed->ed_flags |= HTOO32(OHCI_ED_SKIP);
+	if ((O32TOH(sed->ed->ed_tailp) & OHCI_HEADMASK) !=
+	    (O32TOH(sed->ed->ed_headp) & OHCI_HEADMASK)) {
 		ohci_soft_td_t *std;
-		std = ohci_hash_find_td(sc, O32TOH(sed->ed.ed_headp));
+		std = ohci_hash_find_td(sc, O32TOH(sed->ed->ed_headp));
 		printf("ohci_close_pipe: pipe not empty sed=%p hd=%#x "
 		       "tl=%#x pipe=%p, std=%p\n", sed,
-		       (int)O32TOH(sed->ed.ed_headp),
-		       (int)O32TOH(sed->ed.ed_tailp),
+		       (int)O32TOH(sed->ed->ed_headp),
+		       (int)O32TOH(sed->ed->ed_tailp),
 		       pipe, std);
 #ifdef OHCI_DEBUG
 		usbd_dump_pipe(&opipe->pipe);
@@ -2214,8 +2232,8 @@ ohci_close_pipe(struct usbd_pipe *pipe, ohci_soft_ed_t *head)
 			ohci_dump_td(sc, std);
 #endif
 		usb_delay_ms(&sc->sc_bus, 2);
-		if ((O32TOH(sed->ed.ed_tailp) & OHCI_HEADMASK) !=
-		    (O32TOH(sed->ed.ed_headp) & OHCI_HEADMASK))
+		if ((O32TOH(sed->ed->ed_tailp) & OHCI_HEADMASK) !=
+		    (O32TOH(sed->ed->ed_headp) & OHCI_HEADMASK))
 			printf("ohci_close_pipe: pipe still not empty\n");
 	}
 #endif
@@ -2223,7 +2241,7 @@ ohci_close_pipe(struct usbd_pipe *pipe, ohci_soft_ed_t *head)
 	/* Make sure the host controller is not touching this ED */
 	usb_delay_ms(&sc->sc_bus, 1);
 	pipe->up_endpoint->ue_toggle =
-	    (O32TOH(sed->ed.ed_headp) & OHCI_TOGGLECARRY) ? 1 : 0;
+	    (O32TOH(sed->ed->ed_headp) & OHCI_TOGGLECARRY) ? 1 : 0;
 	ohci_free_sed_locked(sc, opipe->sed);
 }
 
@@ -2276,15 +2294,15 @@ ohci_abortx(struct usbd_xfer *xfer)
 	 */
 	DPRINTFN(1, "stop ed=%#jx", (uintptr_t)sed, 0, 0, 0);
 	usb_syncmem(&sed->dma, sed->offs + offsetof(ohci_ed_t, ed_flags),
-	    sizeof(sed->ed.ed_flags),
+	    sizeof(sed->ed->ed_flags),
 	    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
-	if (!(sed->ed.ed_flags & OHCI_HALTED)) {
+	if (!(sed->ed->ed_flags & OHCI_HALTED)) {
 		/* force hardware skip */
 		DPRINTFN(1, "pausing ed=%#jx", (uintptr_t)sed, 0, 0, 0);
-		sed->ed.ed_flags |= HTOO32(OHCI_ED_SKIP);
+		sed->ed->ed_flags |= HTOO32(OHCI_ED_SKIP);
 		usb_syncmem(&sed->dma,
 		    sed->offs + offsetof(ohci_ed_t, ed_flags),
-		    sizeof(sed->ed.ed_flags),
+		    sizeof(sed->ed->ed_flags),
 		    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 
 		DPRINTFN(10, "SF %#jx xfer %#jx", (uintptr_t)sc,
@@ -2347,13 +2365,13 @@ ohci_abortx(struct usbd_xfer *xfer)
 #define OHCI_CC_ACCESSED_P(x)	\
     (((x) & OHCI_CC_NOT_ACCESSED_MASK) != OHCI_CC_NOT_ACCESSED)
 
-	headp = O32TOH(sed->ed.ed_headp) & OHCI_HEADMASK;
+	headp = O32TOH(sed->ed->ed_headp) & OHCI_HEADMASK;
 	hit = 0;
 	for (; p->xfer == xfer; p = n) {
 		hit |= headp == p->physaddr;
 		n = p->nexttd;
 
-		int cc = OHCI_TD_GET_CC(O32TOH(p->td.td_flags));
+		int cc = OHCI_TD_GET_CC(O32TOH(p->td->td_flags));
 		if (!OHCI_CC_ACCESSED_P(cc)) {
 			ohci_hash_rem_td(sc, p);
 			continue;
@@ -2387,13 +2405,13 @@ ohci_abortx(struct usbd_xfer *xfer)
 	/* Zap headp register if hardware pointed inside the xfer. */
 	if (hit) {
 		DPRINTFN(1, "set hd=0x%08jx, tl=0x%08jx",  (int)p->physaddr,
-		    (int)O32TOH(sed->ed.ed_tailp), 0, 0);
+		    (int)O32TOH(sed->ed->ed_tailp), 0, 0);
 		/* unlink TDs, preserving toggle carry */
-		sed->ed.ed_headp = HTOO32(p->physaddr |
-		    (O32TOH(sed->ed.ed_headp) & OHCI_TOGGLECARRY));
+		sed->ed->ed_headp = HTOO32(p->physaddr |
+		    (O32TOH(sed->ed->ed_headp) & OHCI_TOGGLECARRY));
 		usb_syncmem(&sed->dma,
 		    sed->offs + offsetof(ohci_ed_t, ed_headp),
-		    sizeof(sed->ed.ed_headp),
+		    sizeof(sed->ed->ed_headp),
 		    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 	} else {
 		DPRINTFN(1, "no hit", 0, 0, 0, 0);
@@ -2403,11 +2421,11 @@ ohci_abortx(struct usbd_xfer *xfer)
 	 * HC Step 4: Turn on hardware again.
 	 */
 	usb_syncmem(&sed->dma, sed->offs + offsetof(ohci_ed_t, ed_flags),
-	    sizeof(sed->ed.ed_flags),
+	    sizeof(sed->ed->ed_flags),
 	    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
-	sed->ed.ed_flags &= HTOO32(~OHCI_ED_SKIP); /* remove hardware skip */
+	sed->ed->ed_flags &= HTOO32(~OHCI_ED_SKIP); /* remove hardware skip */
 	usb_syncmem(&sed->dma, sed->offs + offsetof(ohci_ed_t, ed_flags),
-	    sizeof(sed->ed.ed_flags),
+	    sizeof(sed->ed->ed_flags),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 
 	/*
@@ -2844,13 +2862,13 @@ ohci_device_ctrl_start(struct usbd_xfer *xfer)
 	DPRINTFN(10, "xfer=%#jx new tail=%#jx held at %#jx", (uintptr_t)ox,
 	    (uintptr_t)tail, (uintptr_t)tail->held, 0);
 
-	KASSERTMSG(OHCI_ED_GET_FA(O32TOH(sed->ed.ed_flags)) == dev->ud_addr,
+	KASSERTMSG(OHCI_ED_GET_FA(O32TOH(sed->ed->ed_flags)) == dev->ud_addr,
 	    "address ED %" __PRIuBITS " pipe %d\n",
-	    OHCI_ED_GET_FA(O32TOH(sed->ed.ed_flags)), dev->ud_addr);
-	KASSERTMSG(OHCI_ED_GET_MAXP(O32TOH(sed->ed.ed_flags)) ==
+	    OHCI_ED_GET_FA(O32TOH(sed->ed->ed_flags)), dev->ud_addr);
+	KASSERTMSG(OHCI_ED_GET_MAXP(O32TOH(sed->ed->ed_flags)) ==
 	    UGETW(opipe->pipe.up_endpoint->ue_edesc->wMaxPacketSize),
 	    "MPL ED %" __PRIuBITS " pipe %d\n",
-	    OHCI_ED_GET_MAXP(O32TOH(sed->ed.ed_flags)),
+	    OHCI_ED_GET_MAXP(O32TOH(sed->ed->ed_flags)),
 	    UGETW(opipe->pipe.up_endpoint->ue_edesc->wMaxPacketSize));
 
 	/* next will point to data if len != 0 */
@@ -2864,7 +2882,7 @@ ohci_device_ctrl_start(struct usbd_xfer *xfer)
 		next = ox->ox_stds[0];
 		ohci_reset_std_chain(sc, xfer, len, isread, next, &end);
 
-		end->td.td_nexttd = HTOO32(stat->physaddr);
+		end->td->td_nexttd = HTOO32(stat->physaddr);
 		end->nexttd = stat;
 
 		usb_syncmem(&end->dma, end->offs, sizeof(end->td),
@@ -2874,11 +2892,11 @@ ohci_device_ctrl_start(struct usbd_xfer *xfer)
 		    isread ? BUS_DMASYNC_PREREAD : BUS_DMASYNC_PREWRITE);
 		std = ox->ox_stds[0];
 		/* Start toggle at 1 and then use the carried toggle. */
-		std->td.td_flags &= HTOO32(~OHCI_TD_TOGGLE_MASK);
-		std->td.td_flags |= HTOO32(OHCI_TD_SET_TOGGLE(OHCI_TD_TOGGLE_1));
+		std->td->td_flags &= HTOO32(~OHCI_TD_TOGGLE_MASK);
+		std->td->td_flags |= HTOO32(OHCI_TD_SET_TOGGLE(OHCI_TD_TOGGLE_1));
 		usb_syncmem(&std->dma,
 		    std->offs + offsetof(ohci_td_t, td_flags),
-		    sizeof(std->td.td_flags),
+		    sizeof(std->td->td_flags),
 		    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 	}
 
@@ -2891,15 +2909,15 @@ ohci_device_ctrl_start(struct usbd_xfer *xfer)
 	memcpy(KERNADDR(&opipe->ctrl.reqdma, 0), req, sizeof(*req));
 	usb_syncmem(&opipe->ctrl.reqdma, 0, sizeof(*req), BUS_DMASYNC_PREWRITE);
 
-	setup->td.td_flags = HTOO32(
+	setup->td->td_flags = HTOO32(
 	    OHCI_TD_SET_DP(OHCI_TD_DP_SETUP) |
 	    OHCI_TD_SET_CC(OHCI_TD_NOCC) |
 	    OHCI_TD_SET_TOGGLE(OHCI_TD_TOGGLE_0) |
 	    OHCI_TD_SET_DI(OHCI_TD_NOINTR)
 	    );
-	setup->td.td_cbp = HTOO32(DMAADDR(&opipe->ctrl.reqdma, 0));
-	setup->td.td_nexttd = HTOO32(next->physaddr);
-	setup->td.td_be = HTOO32(O32TOH(setup->td.td_cbp) + sizeof(*req) - 1);
+	setup->td->td_cbp = HTOO32(DMAADDR(&opipe->ctrl.reqdma, 0));
+	setup->td->td_nexttd = HTOO32(next->physaddr);
+	setup->td->td_be = HTOO32(O32TOH(setup->td->td_cbp) + sizeof(*req) - 1);
 	setup->nexttd = next;
 	setup->len = 0;
 	setup->xfer = xfer;
@@ -2910,15 +2928,15 @@ ohci_device_ctrl_start(struct usbd_xfer *xfer)
 	usb_syncmem(&setup->dma, setup->offs, sizeof(setup->td),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 
-	stat->td.td_flags = HTOO32(
+	stat->td->td_flags = HTOO32(
 	    OHCI_TD_SET_DP(isread ? OHCI_TD_DP_OUT : OHCI_TD_DP_IN) |
 	    OHCI_TD_SET_CC(OHCI_TD_NOCC) |
 	    OHCI_TD_SET_TOGGLE(OHCI_TD_TOGGLE_1) |
 	    OHCI_TD_SET_DI(1)
 	    );
-	stat->td.td_cbp = 0;
-	stat->td.td_nexttd = HTOO32(tail->physaddr);
-	stat->td.td_be = 0;
+	stat->td->td_cbp = 0;
+	stat->td->td_nexttd = HTOO32(tail->physaddr);
+	stat->td->td_be = 0;
 	stat->nexttd = tail;
 	stat->flags = OHCI_CALL_DONE;
 	stat->len = 0;
@@ -2928,7 +2946,7 @@ ohci_device_ctrl_start(struct usbd_xfer *xfer)
 	usb_syncmem(&stat->dma, stat->offs, sizeof(stat->td),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 
-	memset(&tail->td, 0, sizeof(tail->td));
+	memset(tail->td, 0, sizeof(*tail->td));
 	tail->nexttd = NULL;
 	tail->xfer = NULL;
 
@@ -2945,10 +2963,10 @@ ohci_device_ctrl_start(struct usbd_xfer *xfer)
 #endif
 
 	/* Insert ED in schedule */
-	sed->ed.ed_tailp = HTOO32(tail->physaddr);
+	sed->ed->ed_tailp = HTOO32(tail->physaddr);
 	usb_syncmem(&sed->dma,
 	    sed->offs + offsetof(ohci_ed_t, ed_tailp),
-	    sizeof(sed->ed.ed_tailp),
+	    sizeof(sed->ed->ed_tailp),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 	OWRITE4(sc, OHCI_COMMAND_STATUS, OHCI_CLF);
 	usbd_xfer_schedule_timeout(xfer);
@@ -3000,7 +3018,7 @@ ohci_device_clear_toggle(struct usbd_pipe *pipe)
 	struct ohci_pipe *opipe = OHCI_PIPE2OPIPE(pipe);
 	ohci_softc_t *sc = OHCI_PIPE2SC(pipe);
 
-	opipe->sed->ed.ed_headp &= HTOO32(~OHCI_TOGGLECARRY);
+	opipe->sed->ed->ed_headp &= HTOO32(~OHCI_TOGGLECARRY);
 }
 
 Static void
@@ -3121,7 +3139,7 @@ ohci_device_bulk_start(struct usbd_xfer *xfer)
 
 	/* point at sentinel */
 	tail = opipe->tail.td;
-	memset(&tail->td, 0, sizeof(tail->td));
+	memset(tail->td, 0, sizeof(*tail->td));
 	tail->held = &opipe->tail.td;
 	tail->nexttd = NULL;
 	tail->xfer = NULL;
@@ -3136,9 +3154,9 @@ ohci_device_bulk_start(struct usbd_xfer *xfer)
 	KASSERT(opipe->tail.td == tail);
 
 	/* We want interrupt at the end of the transfer. */
-	last->td.td_flags &= HTOO32(~OHCI_TD_DI_MASK);
-	last->td.td_flags |= HTOO32(OHCI_TD_SET_DI(1));
-	last->td.td_nexttd = HTOO32(tail->physaddr);
+	last->td->td_flags &= HTOO32(~OHCI_TD_DI_MASK);
+	last->td->td_flags |= HTOO32(OHCI_TD_SET_DI(1));
+	last->td->td_nexttd = HTOO32(tail->physaddr);
 	last->nexttd = tail;
 	last->flags |= OHCI_CALL_DONE;
 	usb_syncmem(&last->dma, last->offs, sizeof(last->td),
@@ -3146,10 +3164,10 @@ ohci_device_bulk_start(struct usbd_xfer *xfer)
 
 	DPRINTFN(4, "ed_flags=0x%08jx td_flags=0x%08jx "
 		    "td_cbp=0x%08jx td_be=0x%08jx",
-		    (int)O32TOH(sed->ed.ed_flags),
-		    (int)O32TOH(data->td.td_flags),
-		    (int)O32TOH(data->td.td_cbp),
-		    (int)O32TOH(data->td.td_be));
+		    (int)O32TOH(sed->ed->ed_flags),
+		    (int)O32TOH(data->td->td_flags),
+		    (int)O32TOH(data->td->td_cbp),
+		    (int)O32TOH(data->td->td_be));
 
 #ifdef OHCI_DEBUG
 	DPRINTFN(5, "--- dump start ---", 0, 0, 0, 0);
@@ -3166,8 +3184,8 @@ ohci_device_bulk_start(struct usbd_xfer *xfer)
 	}
 	usb_syncmem(&sed->dma, sed->offs, sizeof(sed->ed),
 	    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
-	sed->ed.ed_tailp = HTOO32(tail->physaddr);
-	sed->ed.ed_flags &= HTOO32(~OHCI_ED_SKIP);
+	sed->ed->ed_tailp = HTOO32(tail->physaddr);
+	sed->ed->ed_flags &= HTOO32(~OHCI_ED_SKIP);
 	usb_syncmem(&sed->dma, sed->offs, sizeof(sed->ed),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 	OWRITE4(sc, OHCI_COMMAND_STATUS, OHCI_BLF);
@@ -3326,7 +3344,7 @@ ohci_device_intr_start(struct usbd_xfer *xfer)
 
 	/* point at sentinel */
 	tail = opipe->tail.td;
-	memset(&tail->td, 0, sizeof(tail->td));
+	memset(tail->td, 0, sizeof(*tail->td));
 	tail->held = &opipe->tail.td;
 	tail->nexttd = NULL;
 	tail->xfer = NULL;
@@ -3341,10 +3359,10 @@ ohci_device_intr_start(struct usbd_xfer *xfer)
 	KASSERT(opipe->tail.td == tail);
 
 	/* We want interrupt at the end of the transfer. */
-	last->td.td_flags &= HTOO32(~OHCI_TD_DI_MASK);
-	last->td.td_flags |= HTOO32(OHCI_TD_SET_DI(1));
+	last->td->td_flags &= HTOO32(~OHCI_TD_DI_MASK);
+	last->td->td_flags |= HTOO32(OHCI_TD_SET_DI(1));
 
-	last->td.td_nexttd = HTOO32(tail->physaddr);
+	last->td->td_nexttd = HTOO32(tail->physaddr);
 	last->nexttd = tail;
 	last->flags |= OHCI_CALL_DONE;
 	usb_syncmem(&last->dma, last->offs, sizeof(last->td),
@@ -3362,8 +3380,8 @@ ohci_device_intr_start(struct usbd_xfer *xfer)
 	/* Insert ED in schedule */
 	usb_syncmem(&sed->dma, sed->offs, sizeof(sed->ed),
 	    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
-	sed->ed.ed_tailp = HTOO32(tail->physaddr);
-	sed->ed.ed_flags &= HTOO32(~OHCI_ED_SKIP);
+	sed->ed->ed_tailp = HTOO32(tail->physaddr);
+	sed->ed->ed_flags &= HTOO32(~OHCI_ED_SKIP);
 	usb_syncmem(&sed->dma, sed->offs, sizeof(sed->ed),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 
@@ -3404,21 +3422,21 @@ ohci_device_intr_close(struct usbd_pipe *pipe)
 	    pos, 0);
 	usb_syncmem(&sed->dma, sed->offs,
 	    sizeof(sed->ed), BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
-	sed->ed.ed_flags |= HTOO32(OHCI_ED_SKIP);
+	sed->ed->ed_flags |= HTOO32(OHCI_ED_SKIP);
 	usb_syncmem(&sed->dma, sed->offs + offsetof(ohci_ed_t, ed_flags),
-	    sizeof(sed->ed.ed_flags),
+	    sizeof(sed->ed->ed_flags),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
-	if ((O32TOH(sed->ed.ed_tailp) & OHCI_HEADMASK) !=
-	    (O32TOH(sed->ed.ed_headp) & OHCI_HEADMASK))
+	if ((O32TOH(sed->ed->ed_tailp) & OHCI_HEADMASK) !=
+	    (O32TOH(sed->ed->ed_headp) & OHCI_HEADMASK))
 		usb_delay_ms_locked(&sc->sc_bus, 2, &sc->sc_lock);
 
 	for (p = sc->sc_eds[pos]; p && p->next != sed; p = p->next)
 		continue;
 	KASSERT(p);
 	p->next = sed->next;
-	p->ed.ed_nexted = sed->ed.ed_nexted;
+	p->ed->ed_nexted = sed->ed->ed_nexted;
 	usb_syncmem(&p->dma, p->offs + offsetof(ohci_ed_t, ed_nexted),
-	    sizeof(p->ed.ed_nexted),
+	    sizeof(p->ed->ed_nexted),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 
 	for (j = 0; j < nslots; j++)
@@ -3478,16 +3496,16 @@ ohci_device_setintr(ohci_softc_t *sc, struct ohci_pipe *opipe, int ival)
 	hsed = sc->sc_eds[best];
 	sed->next = hsed->next;
 	usb_syncmem(&hsed->dma, hsed->offs + offsetof(ohci_ed_t, ed_flags),
-	    sizeof(hsed->ed.ed_flags),
+	    sizeof(hsed->ed->ed_flags),
 	    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
-	sed->ed.ed_nexted = hsed->ed.ed_nexted;
+	sed->ed->ed_nexted = hsed->ed->ed_nexted;
 	usb_syncmem(&sed->dma, sed->offs + offsetof(ohci_ed_t, ed_flags),
-	    sizeof(sed->ed.ed_flags),
+	    sizeof(sed->ed->ed_flags),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 	hsed->next = sed;
-	hsed->ed.ed_nexted = HTOO32(sed->physaddr);
+	hsed->ed->ed_nexted = HTOO32(sed->physaddr);
 	usb_syncmem(&hsed->dma, hsed->offs + offsetof(ohci_ed_t, ed_flags),
-	    sizeof(hsed->ed.ed_flags),
+	    sizeof(hsed->ed->ed_flags),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 	mutex_exit(&sc->sc_lock);
 
@@ -3688,15 +3706,15 @@ ohci_device_isoc_enter(struct usbd_xfer *xfer)
 			KASSERT(j < ox->ox_nsitd);
 
 			/* Fill current ITD */
-			sitd->itd.itd_flags = HTOO32(
+			sitd->itd->itd_flags = HTOO32(
 			    OHCI_ITD_SET_CC(OHCI_ITD_NOCC) |
 			    OHCI_ITD_SET_SF(isoc->next) |
 			    OHCI_ITD_SET_DI(6) | /* delay intr a little */
 			    OHCI_ITD_SET_FC(ncur)
 			    );
-			sitd->itd.itd_bp0 = HTOO32(bp0);
-			sitd->itd.itd_nextitd = HTOO32(nsitd->physaddr);
-			sitd->itd.itd_be = HTOO32(end);
+			sitd->itd->itd_bp0 = HTOO32(bp0);
+			sitd->itd->itd_nextitd = HTOO32(nsitd->physaddr);
+			sitd->itd->itd_be = HTOO32(end);
 			sitd->nextitd = nsitd;
 			sitd->xfer = xfer;
 			sitd->flags = 0;
@@ -3712,7 +3730,7 @@ ohci_device_isoc_enter(struct usbd_xfer *xfer)
 			bp0 = bp1 = OHCI_PAGE(buf);
 			ncur = 0;
 		}
-		sitd->itd.itd_offset[ncur] = HTOO16(OHCI_ITD_MK_OFFS(offs));
+		sitd->itd->itd_offset[ncur] = HTOO16(OHCI_ITD_MK_OFFS(offs));
 		end = nend;
 		offs = noffs;
 	}
@@ -3720,7 +3738,7 @@ ohci_device_isoc_enter(struct usbd_xfer *xfer)
 
 	/* point at sentinel */
 	tail = opipe->tail.itd;
-	memset(&tail->itd, 0, sizeof(tail->itd));
+	memset(tail->itd, 0, sizeof(*tail->itd));
 	tail->held = &opipe->tail.itd;
 	tail->nextitd = NULL;
 	tail->xfer = NULL;
@@ -3728,15 +3746,15 @@ ohci_device_isoc_enter(struct usbd_xfer *xfer)
 	    BUS_DMASYNC_PREWRITE);
 
 	/* Fixup last used ITD */
-	sitd->itd.itd_flags = HTOO32(
+	sitd->itd->itd_flags = HTOO32(
 	    OHCI_ITD_SET_CC(OHCI_ITD_NOCC) |
 	    OHCI_ITD_SET_SF(isoc->next) |
 	    OHCI_ITD_SET_DI(0) |
 	    OHCI_ITD_SET_FC(ncur)
 	    );
-	sitd->itd.itd_bp0 = HTOO32(bp0);
-	sitd->itd.itd_nextitd = HTOO32(tail->physaddr);
-	sitd->itd.itd_be = HTOO32(end);
+	sitd->itd->itd_bp0 = HTOO32(bp0);
+	sitd->itd->itd_nextitd = HTOO32(tail->physaddr);
+	sitd->itd->itd_be = HTOO32(end);
 	sitd->nextitd = tail;
 	sitd->xfer = xfer;
 	sitd->flags = OHCI_CALL_DONE;
@@ -3769,10 +3787,10 @@ ohci_device_isoc_enter(struct usbd_xfer *xfer)
 
 	usb_syncmem(&sed->dma, sed->offs, sizeof(sed->ed),
 	    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
-	sed->ed.ed_tailp = HTOO32(tail->physaddr);
-	sed->ed.ed_flags &= HTOO32(~OHCI_ED_SKIP);
+	sed->ed->ed_tailp = HTOO32(tail->physaddr);
+	sed->ed->ed_flags &= HTOO32(~OHCI_ED_SKIP);
 	usb_syncmem(&sed->dma, sed->offs + offsetof(ohci_ed_t, ed_flags),
-	    sizeof(sed->ed.ed_flags),
+	    sizeof(sed->ed->ed_flags),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 	mutex_exit(&sc->sc_lock);
 }
@@ -3803,9 +3821,9 @@ ohci_device_isoc_abort(struct usbd_xfer *xfer)
 	sed = opipe->sed;
 	usb_syncmem(&sed->dma, sed->offs, sizeof(sed->ed),
 	    BUS_DMASYNC_POSTWRITE | BUS_DMASYNC_POSTREAD);
-	sed->ed.ed_flags |= HTOO32(OHCI_ED_SKIP); /* force hardware skip */
+	sed->ed->ed_flags |= HTOO32(OHCI_ED_SKIP); /* force hardware skip */
 	usb_syncmem(&sed->dma, sed->offs + offsetof(ohci_ed_t, ed_flags),
-	    sizeof(sed->ed.ed_flags),
+	    sizeof(sed->ed->ed_flags),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 
 	sitd = xfer->ux_hcpriv;
@@ -3825,8 +3843,8 @@ ohci_device_isoc_abort(struct usbd_xfer *xfer)
 	/* Run callback. */
 	usb_transfer_complete(xfer);
 
-	sed->ed.ed_headp = HTOO32(sitd->physaddr); /* unlink TDs */
-	sed->ed.ed_flags &= HTOO32(~OHCI_ED_SKIP); /* remove hardware skip */
+	sed->ed->ed_headp = HTOO32(sitd->physaddr); /* unlink TDs */
+	sed->ed->ed_flags &= HTOO32(~OHCI_ED_SKIP); /* remove hardware skip */
 	usb_syncmem(&sed->dma, sed->offs, sizeof(sed->ed),
 	    BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD);
 
