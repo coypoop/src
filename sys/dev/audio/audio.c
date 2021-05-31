@@ -547,7 +547,7 @@ static int  filt_audioread_event(struct knote *, long);
 
 static int audio_open(dev_t, struct audio_softc *, int, int, struct lwp *,
 	audio_file_t **);
-static int audio_close(struct audio_softc *, audio_file_t *);
+static void audio_close(struct audio_softc *, audio_file_t *);
 static void audio_unlink(struct audio_softc *, audio_file_t *);
 static int audio_read(struct audio_softc *, struct uio *, int, audio_file_t *);
 static int audio_write(struct audio_softc *, struct uio *, int, audio_file_t *);
@@ -632,7 +632,7 @@ static int  audio_rmixer_halt(struct audio_softc *);
 
 static void mixer_init(struct audio_softc *);
 static int mixer_open(dev_t, struct audio_softc *, int, int, struct lwp *);
-static int mixer_close(struct audio_softc *, audio_file_t *);
+static void mixer_close(struct audio_softc *, audio_file_t *);
 static int mixer_ioctl(struct audio_softc *, u_long, void *, int, struct lwp *);
 static void mixer_async_add(struct audio_softc *, pid_t);
 static void mixer_async_remove(struct audio_softc *, pid_t);
@@ -1562,6 +1562,21 @@ audio_exlock_enter(struct audio_softc *sc)
 }
 
 /*
+ * Enter critical section.  Never fails.  Allowed only on close.
+ * Must be called without sc_lock held.
+ */
+static void
+audio_exlock_enter_closing(struct audio_softc *sc)
+{
+
+	mutex_enter(sc->sc_lock);
+	while (__predict_false(sc->sc_exlock != 0))
+		cv_wait(&sc->sc_exlockcv, sc->sc_lock);
+	sc->sc_exlock = 1;
+	mutex_exit(sc->sc_lock);
+}
+
+/*
  * Exit critical section.
  * Must be called without sc_lock held.
  */
@@ -1777,13 +1792,11 @@ audioclose(struct file *fp)
 	struct psref sc_ref;
 	audio_file_t *file;
 	int bound;
-	int error;
 	dev_t dev;
 
 	KASSERT(fp->f_audioctx);
 	file = fp->f_audioctx;
 	dev = file->dev;
-	error = 0;
 
 	/*
 	 * audioclose() must
@@ -1804,16 +1817,15 @@ audioclose(struct file *fp)
 		switch (AUDIODEV(dev)) {
 		case SOUND_DEVICE:
 		case AUDIO_DEVICE:
-			error = audio_close(sc, file);
+			audio_close(sc, file);
 			break;
 		case AUDIOCTL_DEVICE:
-			error = 0;
 			break;
 		case MIXER_DEVICE:
-			error = mixer_close(sc, file);
+			mixer_close(sc, file);
 			break;
 		default:
-			error = ENXIO;
+			panic("invalid audio minor: %d", (int)AUDIODEV(dev));
 			break;
 		}
 
@@ -1831,7 +1843,7 @@ audioclose(struct file *fp)
 	kmem_free(file, sizeof(*file));
 	fp->f_audioctx = NULL;
 
-	return error;
+	return 0;
 }
 
 SDT_PROBE_DEFINE6(audio, file, read, start,
@@ -2230,9 +2242,7 @@ audiobellclose(audio_file_t *file)
 	struct audio_softc *sc;
 	struct psref sc_ref;
 	int bound;
-	int error;
 
-	error = 0;
 	/*
 	 * audiobellclose() must
 	 * - unplug track from the trackmixer if sc exist.
@@ -2241,7 +2251,7 @@ audiobellclose(audio_file_t *file)
 	bound = curlwp_bind();
 	sc = audio_sc_acquire_fromfile(file, &sc_ref);
 	if (sc) {
-		error = audio_close(sc, file);
+		audio_close(sc, file);
 		audio_sc_release(sc, &sc_ref);
 	}
 	curlwp_bindx(bound);
@@ -2251,7 +2261,7 @@ audiobellclose(audio_file_t *file)
 	audio_track_destroy(file->ptrack);
 	KASSERT(file->rtrack == NULL);
 	kmem_free(file, sizeof(*file));
-	return error;
+	return 0;		/* XXX return void; should never fail */
 }
 
 /* Set sample rate for audiobell */
@@ -2669,10 +2679,9 @@ bad:
 /*
  * Must be called without sc_lock nor sc_exlock held.
  */
-int
+void
 audio_close(struct audio_softc *sc, audio_file_t *file)
 {
-	int error;
 
 	/*
 	 * Drain first.
@@ -2684,22 +2693,9 @@ audio_close(struct audio_softc *sc, audio_file_t *file)
 		mutex_exit(sc->sc_lock);
 	}
 
-	error = audio_exlock_enter(sc);
-	if (error) {
-		/*
-		 * If EIO, this sc is about to detach.  In this case, even if
-		 * we don't do subsequent _unlink(), audiodetach() will do it.
-		 */
-		if (error == EIO)
-			return error;
-
-		/* XXX This should not happen but what should I do ? */
-		panic("%s: can't acquire exlock: errno=%d", __func__, error);
-	}
+	audio_exlock_enter_closing(sc);
 	audio_unlink(sc, file);
 	audio_exlock_exit(sc);
-
-	return 0;
 }
 
 /*
@@ -8401,19 +8397,14 @@ mixer_signal(struct audio_softc *sc)
 /*
  * Close a mixer device
  */
-int
+void
 mixer_close(struct audio_softc *sc, audio_file_t *file)
 {
-	int error;
 
-	error = audio_exlock_enter(sc);
-	if (error)
-		return error;
+	audio_exlock_enter_closing(sc);
 	TRACE(1, "called");
 	mixer_async_remove(sc, curproc->p_pid);
 	audio_exlock_exit(sc);
-
-	return 0;
 }
 
 /*
