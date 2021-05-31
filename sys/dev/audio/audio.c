@@ -2661,9 +2661,6 @@ audio_close(struct audio_softc *sc, audio_file_t *file)
 {
 	int error;
 
-	/* Protect entering new fileops to this file */
-	atomic_store_relaxed(&file->dying, true);
-
 	/*
 	 * Drain first.
 	 * It must be done before unlinking(acquiring exlock).
