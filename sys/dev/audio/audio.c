@@ -2571,6 +2571,7 @@ audio_open(dev_t dev, struct audio_softc *sc, int flags, int ifmt,
 	mutex_enter(sc->sc_lock);
 	if (sc->sc_dying) {
 		mutex_exit(sc->sc_lock);
+		error = ENXIO;
 		goto bad;
 	}
 
