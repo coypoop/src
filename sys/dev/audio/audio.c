@@ -1370,11 +1370,19 @@ audiodetach(device_t self, int flags)
 
 	/*
 	 * Clean up all open instances.
-	 * Here, we no longer need any locks to traverse sc_files.
 	 */
+	mutex_enter(sc->sc_lock);
 	while ((file = SLIST_FIRST(&sc->sc_files)) != NULL) {
-		audio_unlink(sc, file);
+		mutex_enter(sc->sc_intr_lock);
+		SLIST_REMOVE_HEAD(&sc->sc_files, entry);
+		mutex_exit(sc->sc_intr_lock);
+		if (file->ptrack || file->rtrack) {
+			mutex_exit(sc->sc_lock);
+			audio_unlink(sc, file);
+			mutex_enter(sc->sc_lock);
+		}
 	}
+	mutex_exit(sc->sc_lock);
 
 	pmf_event_deregister(self, PMFE_AUDIO_VOLUME_DOWN,
 	    audio_volume_down, true);
@@ -1788,6 +1796,11 @@ audioclose(struct file *fp)
 	sc = audio_sc_acquire_fromfile(file, &sc_ref);
 	SDT_PROBE2(audio, file, close, start,  file, sc);
 	if (sc) {
+		mutex_enter(sc->sc_lock);
+		mutex_enter(sc->sc_intr_lock);
+		SLIST_REMOVE(&sc->sc_files, file, audio_file, entry);
+		mutex_exit(sc->sc_intr_lock);
+		mutex_exit(sc->sc_lock);
 		switch (AUDIODEV(dev)) {
 		case SOUND_DEVICE:
 		case AUDIO_DEVICE:
@@ -2711,10 +2724,6 @@ audio_unlink(struct audio_softc *sc, audio_file_t *file)
 
 	device_active(sc->sc_dev, DVA_SYSTEM);
 
-	mutex_enter(sc->sc_intr_lock);
-	SLIST_REMOVE(&sc->sc_files, file, audio_file, entry);
-	mutex_exit(sc->sc_intr_lock);
-
 	if (file->ptrack) {
 		TRACET(3, file->ptrack, "dropframes=%" PRIu64,
 		    file->ptrack->dropframes);
@@ -3634,7 +3643,17 @@ audioctl_open(dev_t dev, struct audio_softc *sc, int flags, int ifmt,
 	af->sc = sc;
 	af->dev = dev;
 
-	/* Not necessary to insert sc_files. */
+	mutex_enter(sc->sc_lock);
+	if (sc->sc_dying) {
+		mutex_exit(sc->sc_lock);
+		kmem_free(af, sizeof(*af));
+		fd_abort(curproc, fp, fd);
+		return ENXIO;
+	}
+	mutex_enter(sc->sc_intr_lock);
+	SLIST_INSERT_HEAD(&sc->sc_files, af, entry);
+	mutex_exit(sc->sc_intr_lock);
+	mutex_exit(sc->sc_lock);
 
 	error = fd_clone(fp, fd, flags, &audio_fileops, af);
 	KASSERTMSG(error == EMOVEFD, "error=%d", error);
@@ -8281,6 +8300,18 @@ mixer_open(dev_t dev, struct audio_softc *sc, int flags, int ifmt,
 	af = kmem_zalloc(sizeof(*af), KM_SLEEP);
 	af->sc = sc;
 	af->dev = dev;
+
+	mutex_enter(sc->sc_lock);
+	if (sc->sc_dying) {
+		mutex_exit(sc->sc_lock);
+		kmem_free(af, sizeof(*af));
+		fd_abort(curproc, fp, fd);
+		return ENXIO;
+	}
+	mutex_enter(sc->sc_intr_lock);
+	SLIST_INSERT_HEAD(&sc->sc_files, af, entry);
+	mutex_exit(sc->sc_intr_lock);
+	mutex_exit(sc->sc_lock);
 
 	error = fd_clone(fp, fd, flags, &audio_fileops, af);
 	KASSERT(error == EMOVEFD);
