@@ -938,7 +938,7 @@ audioattach(device_t parent, device_t self, void *aux)
 	sc->hw_hdl = hdlp;
 	sc->hw_dev = parent;
 
-	sc->sc_exlock = 1;
+	sc->sc_exlock = curlwp;
 	sc->sc_blk_ms = AUDIO_BLK_MS;
 	SLIST_INIT(&sc->sc_files);
 	cv_init(&sc->sc_exlockcv, "audiolk");
@@ -1126,14 +1126,14 @@ audioattach(device_t parent, device_t self, void *aux)
 #endif
 
 	audiorescan(self, NULL, NULL);
-	sc->sc_exlock = 0;
+	sc->sc_exlock = NULL;
 	SDT_PROBE1(audio, device, attach, done,  sc);
 	return;
 
 bad:
 	/* Clearing hw_if means that device is attached but disabled. */
 	sc->hw_if = NULL;
-	sc->sc_exlock = 0;
+	sc->sc_exlock = NULL;
 	aprint_error_dev(sc->sc_dev, "disabled\n");
 	SDT_PROBE1(audio, device, attach, error,  sc);
 	return;
@@ -1366,7 +1366,7 @@ audiodetach(device_t self, int flags)
 	 * that hold sc, and any new calls with files that were for sc will
 	 * fail.  Thus, we now have exclusive access to the softc.
 	 */
-	sc->sc_exlock = 1;
+	sc->sc_exlock = curlwp;
 
 	/*
 	 * Clean up all open instances.
@@ -1513,7 +1513,7 @@ audio_exlock_mutex_enter(struct audio_softc *sc)
 		return EIO;
 	}
 
-	while (__predict_false(sc->sc_exlock != 0)) {
+	while (__predict_false(sc->sc_exlock)) {
 		error = cv_wait_sig(&sc->sc_exlockcv, sc->sc_lock);
 		if (sc->sc_dying)
 			error = EIO;
@@ -1524,7 +1524,7 @@ audio_exlock_mutex_enter(struct audio_softc *sc)
 	}
 
 	/* Acquire */
-	sc->sc_exlock = 1;
+	sc->sc_exlock = curlwp;
 	return 0;
 }
 
@@ -1537,8 +1537,9 @@ audio_exlock_mutex_exit(struct audio_softc *sc)
 {
 
 	KASSERT(mutex_owned(sc->sc_lock));
+	KASSERT(sc->sc_exlock == curlwp);
 
-	sc->sc_exlock = 0;
+	sc->sc_exlock = NULL;
 	cv_broadcast(&sc->sc_exlockcv);
 	mutex_exit(sc->sc_lock);
 }
@@ -1570,9 +1571,19 @@ audio_exlock_enter_closing(struct audio_softc *sc)
 {
 
 	mutex_enter(sc->sc_lock);
-	while (__predict_false(sc->sc_exlock != 0))
+	while (__predict_false(sc->sc_exlock != 0)) {
+		DPRINTF(1, "%s: pid %jd (%s, lid %p%s%s)"
+		    " holding up %s close\n",
+		    __func__,
+		    (intmax_t)sc->sc_exlock->l_proc->p_pid,
+		    sc->sc_exlock->l_proc->p_comm,
+		    sc->sc_exlock,
+		    sc->sc_exlock->l_name ? " " : "",
+		    sc->sc_exlock->l_name ? sc->sc_exlock->l_name : "",
+		    device_xname(sc->sc_dev));
 		cv_wait(&sc->sc_exlockcv, sc->sc_lock);
-	sc->sc_exlock = 1;
+	}
+	sc->sc_exlock = curlwp;
 	mutex_exit(sc->sc_lock);
 }
 
@@ -5363,7 +5374,7 @@ audio_mixer_destroy(struct audio_softc *sc, audio_trackmixer_t *mixer)
 {
 	int bufsize;
 
-	KASSERT(sc->sc_exlock == 1);
+	KASSERT(sc->sc_exlock == curlwp);
 
 	bufsize = frametobyte(&mixer->hwbuf.fmt, mixer->hwbuf.capacity);
 

@@ -219,7 +219,7 @@ struct audio_softc {
 	 * Critical section.
 	 * Must be protected by sc_lock.
 	 */
-	int sc_exlock;
+	struct lwp *sc_exlock;
 	kcondvar_t sc_exlockcv;
 
 	/*
