@@ -2699,6 +2699,7 @@ audio_close(struct audio_softc *sc, audio_file_t *file)
 int
 audio_unlink(struct audio_softc *sc, audio_file_t *file)
 {
+	kauth_cred_t cred = NULL;
 	int error;
 
 	mutex_enter(sc->sc_lock);
@@ -2772,11 +2773,13 @@ audio_unlink(struct audio_softc *sc, audio_file_t *file)
 			SDT_PROBE1(audio, device, close, done,  sc);
 			mutex_exit(sc->sc_intr_lock);
 		}
+		cred = sc->sc_cred;
+		sc->sc_cred = NULL;
 	}
 
 	mutex_exit(sc->sc_lock);
-	if (sc->sc_popens + sc->sc_ropens == 0)
-		kauth_cred_free(sc->sc_cred);
+	if (cred)
+		kauth_cred_free(cred);
 
 	TRACE(3, "done");
 
