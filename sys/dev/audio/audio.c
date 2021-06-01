@@ -2708,6 +2708,64 @@ audio_close(struct audio_softc *sc, audio_file_t *file)
 	audio_exlock_exit(sc);
 }
 
+#if 0
+static void
+audio_lastclose_playback(struct audio_softc *sc)
+{
+	int error;
+
+	KASSERT(mutex_owned(sc->sc_lock));
+	KASSERT(sc->sc_exlock == curlwp);
+	KASSERT(sc->sc_popens == 0);
+
+	error = audio_pmixer_halt(sc);
+	if (error) {
+		audio_printf(sc, "halt_output failed: errno=%d (ignored)\n",
+		    error);
+	}
+
+	mutex_enter(sc->sc_intr_lock);
+	sc->sc_pmixer->volume = 256;
+	sc->sc_pmixer->voltimer = 0;
+	mutex_exit(sc->sc_intr_lock);
+}
+
+static void
+audio_lastclose_record(struct audio_softc *sc)
+{
+	int error;
+
+	KASSERT(mutex_owned(sc->sc_lock));
+	KASSERT(sc->sc_exlock == curlwp);
+	KASSERT(sc->sc_ropens == 0);
+
+	error = audio_rmixer_halt(sc);
+	if (error) {
+		audio_printf(sc, "halt_input failed: errno=%d (ignored)\n",
+		    error);
+	}
+}
+
+static void
+audio_hw_close(struct audio_softc *sc)
+{
+
+	KASSERT(mutex_owned(sc->sc_lock));
+	KASSERT(sc->sc_exlock == curlwp);
+	KASSERT(sc->sc_popens == 0);
+	KASSERT(sc->sc_ropens == 0);
+
+	if (sc->hw_if->close) {
+		TRACE(2, "hw_if close");
+		mutex_enter(sc->sc_intr_lock);
+		SDT_PROBE1(audio, device, close, start,  sc);
+		sc->hw_if->close(sc->hw_hdl);
+		SDT_PROBE1(audio, device, close, done,  sc);
+		mutex_exit(sc->sc_intr_lock);
+	}
+}
+#endif
+
 /*
  * Unlink this file, but not freeing memory here.
  * Must be called with sc_exlock held and without sc_lock held.
