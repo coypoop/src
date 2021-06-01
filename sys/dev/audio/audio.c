@@ -548,7 +548,7 @@ static int  filt_audioread_event(struct knote *, long);
 static int audio_open(dev_t, struct audio_softc *, int, int, struct lwp *,
 	audio_file_t **);
 static int audio_close(struct audio_softc *, audio_file_t *);
-static int audio_unlink(struct audio_softc *, audio_file_t *);
+static void audio_unlink(struct audio_softc *, audio_file_t *);
 static int audio_read(struct audio_softc *, struct uio *, int, audio_file_t *);
 static int audio_write(struct audio_softc *, struct uio *, int, audio_file_t *);
 static void audio_file_clear(struct audio_softc *, audio_file_t *);
@@ -2696,17 +2696,17 @@ audio_close(struct audio_softc *sc, audio_file_t *file)
 		/* XXX This should not happen but what should I do ? */
 		panic("%s: can't acquire exlock: errno=%d", __func__, error);
 	}
-	error = audio_unlink(sc, file);
+	audio_unlink(sc, file);
 	audio_exlock_exit(sc);
 
-	return error;
+	return 0;
 }
 
 /*
  * Unlink this file, but not freeing memory here.
  * Must be called with sc_exlock held and without sc_lock held.
  */
-int
+static void
 audio_unlink(struct audio_softc *sc, audio_file_t *file)
 {
 	kauth_cred_t cred = NULL;
@@ -2788,8 +2788,6 @@ audio_unlink(struct audio_softc *sc, audio_file_t *file)
 		kauth_cred_free(cred);
 
 	TRACE(3, "done");
-
-	return 0;
 }
 
 /*
