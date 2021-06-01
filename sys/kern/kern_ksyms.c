@@ -1089,8 +1089,6 @@ ksymsread(dev_t dev, struct uio *uio, int ioflag)
 	for (st = TAILQ_FIRST(&ksyms_symtabs);
 	     st != ksyms_last_snapshot;
 	     st = TAILQ_NEXT(st, sd_queue)) {
-		if (__predict_false(st->sd_gone))
-			continue;
 		if (uio->uio_resid == 0)
 			return 0;
 		if (uio->uio_offset <= st->sd_symsize + filepos) {
@@ -1106,13 +1104,11 @@ ksymsread(dev_t dev, struct uio *uio, int ioflag)
 	/*
 	 * Copy out the string table
 	 */
-	KASSERT(filepos <= sizeof(struct ksyms_hdr) +
+	KASSERT(filepos == sizeof(struct ksyms_hdr) +
 	    ksyms_hdr.kh_shdr[SYMTAB].sh_size);
 	for (st = TAILQ_FIRST(&ksyms_symtabs);
 	     st != ksyms_last_snapshot;
 	     st = TAILQ_NEXT(st, sd_queue)) {
-		if (__predict_false(st->sd_gone))
-			continue;
 		if (uio->uio_resid == 0)
 			return 0;
 		if (uio->uio_offset <= st->sd_strsize + filepos) {
