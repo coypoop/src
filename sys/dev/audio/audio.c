@@ -2236,7 +2236,7 @@ done:
 }
 
 /* Close for audiobell */
-int
+void
 audiobellclose(audio_file_t *file)
 {
 	struct audio_softc *sc;
@@ -2261,7 +2261,6 @@ audiobellclose(audio_file_t *file)
 	audio_track_destroy(file->ptrack);
 	KASSERT(file->rtrack == NULL);
 	kmem_free(file, sizeof(*file));
-	return 0;		/* XXX return void; should never fail */
 }
 
 /* Set sample rate for audiobell */
