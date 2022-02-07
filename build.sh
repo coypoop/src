@@ -1426,7 +1426,8 @@ parseoptions()
 		sets|\
 		sourcesets|\
 		syspkgs|\
-		tools)
+		tools|\
+		upload-image)
 			;;
 
 		*)
@@ -2442,7 +2443,7 @@ main()
 			statusmsg "Successful make ${op}"
 			;;
 
-		live-image|install-image)
+		live-image|install-image|upload-image)
 			# install-image and live-image require mtree spec files
 			# built with UNPRIVED.  Assume UNPRIVED build has been
 			# performed if METALOG file is created in DESTDIR.

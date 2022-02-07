@@ -20,5 +20,6 @@ TARGETS+=release
 TARGETS+=iso_image
 TARGETS+=live_image
 TARGETS+=install_image
+TARGETS+=upload_image
 
 .include <bsd.subdir.mk>

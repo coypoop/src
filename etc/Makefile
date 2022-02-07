@@ -518,6 +518,18 @@ install-image: .PHONY check_DESTDIR check_RELEASEDIR
 	    INSTIMG_RELEASEDIR=${INSTIMG_RELEASEDIR}
 	${MAKESUMS} -t ${INSTIMG_RELEASEDIR} '*.img.gz'
 
+# upload-image --
+#	Standalone target to upload images
+#	after the image was built by another target like live-image.
+#	Should be run after "make live-image" in src and xsrc.
+#	LIVEIMG_RELEASEDIR specifies where the live images are
+#	expected to be found.
+#
+upload-image: .PHONY check_DESTDIR check_RELEASEDIR
+	${MAKEDIRTARGET} ${NETBSDSRCDIR}/distrib upload_image \
+	    LIVEIMG_RELEASEDIR=${LIVEIMG_RELEASEDIR} \
+	    DISTRIBVER=${DISTRIBVER}
+
 # snap_pre --
 #	Create ${RELEASEDIR} and necessary subdirectories.
 #

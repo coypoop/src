@@ -440,6 +440,15 @@ install-image: .PHONY
 	@printf "make ${.TARGET} finished at: " && date
 
 #
+# Upload bootable images.
+#
+
+upload-image: .PHONY
+	${MAKEDIRTARGET} etc upload-image
+	@echo   "make ${.TARGET} started at:  ${START_TIME}"
+	@printf "make ${.TARGET} finished at: " && date
+
+#
 # Special components of the "make build" process.
 #
 

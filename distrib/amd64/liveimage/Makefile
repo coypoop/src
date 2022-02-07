@@ -3,6 +3,6 @@
 SUBDIR=
 SUBDIR+=	emuimage
 
-TARGETS+=	release live_image
+TARGETS+=	release live_image upload_image
 
 .include <bsd.subdir.mk>

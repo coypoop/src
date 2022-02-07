@@ -5,3 +5,4 @@
 iso_image: .PHONY
 live_image: .PHONY
 install_image: .PHONY
+upload_image: .PHONY
