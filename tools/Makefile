@@ -111,7 +111,7 @@ SUBDIR += .WAIT texinfo \
 	.WAIT tic \
 	.WAIT ${TOOLCHAIN_BITS} \
 	${DTRACE_BITS} \
-		asn1_compile cksum compile_et db \
+		asn1_compile bsdec2-image-upload cksum compile_et db \
 		file lint1 slc \
 		makefs sortinfo \
 		.WAIT menuc mkcsmapper mkesdb mklocale mknod msgc \
